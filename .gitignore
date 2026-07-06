@@ -1,0 +1,28 @@
+# Internal development notes (never published)
+/dev/
+
+# Build artifacts
+/terraform-provider-admanager
+*.exe
+/dist/
+
+# Terraform state and workdirs (from local testing with examples/)
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+crash.*.log
+
+# Environment files and local credentials
+.env
+.env.*
+*.pem
+
+# Node tooling for git hooks only (consumers of the provider do not need Node)
+node_modules/
+
+# Editor/OS noise
+.DS_Store
+.idea/
+.vscode/

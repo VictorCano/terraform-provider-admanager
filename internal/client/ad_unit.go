@@ -1,0 +1,195 @@
+package client
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/url"
+	"strings"
+)
+
+// AdUnit mirrors the GoogleAdsAdmanagerV1__AdUnit resource from the discovery
+// document (rev 20260701). Field names and JSON tags come straight from that
+// schema; comments flag which fields are output-only (the API rejects or
+// ignores them on write) and which are immutable.
+//
+// Booleans that the API treats as tri-state on write use *bool so the provider
+// can distinguish "leave unset / inherit" (nil) from an explicit true/false.
+// Output-only booleans use a plain bool since they are only ever decoded.
+type AdUnit struct {
+	// Name is the resource name: networks/{network_code}/adUnits/{ad_unit_id}.
+	Name string `json:"name,omitempty"`
+
+	DisplayName string `json:"displayName,omitempty"` // Required.
+
+	// ParentAdUnit is required and immutable. Format:
+	// networks/{network_code}/adUnits/{ad_unit_id}.
+	ParentAdUnit string `json:"parentAdUnit,omitempty"`
+
+	// AdUnitCode is optional and immutable; the API assigns one when omitted.
+	AdUnitCode string `json:"adUnitCode,omitempty"`
+
+	// AdUnitID is output-only and deprecated (the numeric id embedded in Name).
+	AdUnitID string `json:"adUnitId,omitempty"`
+
+	Description string `json:"description,omitempty"`
+
+	// AppliedTargetWindow is settable (TOP|BLANK); EffectiveTargetWindow is the
+	// inherited/output-only counterpart.
+	AppliedTargetWindow   string `json:"appliedTargetWindow,omitempty"`
+	EffectiveTargetWindow string `json:"effectiveTargetWindow,omitempty"` // Output only.
+
+	ExplicitlyTargeted *bool `json:"explicitlyTargeted,omitempty"`
+
+	// AppliedAdsenseEnabled is the value set directly on this ad unit; nil means
+	// "inherit". EffectiveAdsenseEnabled is the resolved, output-only value.
+	AppliedAdsenseEnabled   *bool `json:"appliedAdsenseEnabled,omitempty"`
+	EffectiveAdsenseEnabled bool  `json:"effectiveAdsenseEnabled,omitempty"` // Output only.
+
+	SmartSizeMode string `json:"smartSizeMode,omitempty"`
+
+	// RefreshDelay is a google-duration string (e.g. "30s"); mobile apps only.
+	RefreshDelay string `json:"refreshDelay,omitempty"`
+
+	// ExternalSetTopBoxChannelID is deprecated in the API but still settable.
+	ExternalSetTopBoxChannelID string `json:"externalSetTopBoxChannelId,omitempty"`
+
+	Status      string `json:"status,omitempty"`      // Output only: ACTIVE|INACTIVE|ARCHIVED.
+	HasChildren bool   `json:"hasChildren,omitempty"` // Output only.
+	UpdateTime  string `json:"updateTime,omitempty"`  // Output only (google-datetime).
+
+	// ParentPath is the output-only chain from the root to this unit's parent.
+	ParentPath []AdUnitParent `json:"parentPath,omitempty"`
+
+	AdUnitSizes []AdUnitSize `json:"adUnitSizes,omitempty"`
+
+	AppliedTeams []string `json:"appliedTeams,omitempty"`
+	Teams        []string `json:"teams,omitempty"` // Output only.
+
+	// Label and frequency-cap fields are part of the API resource and are kept
+	// here so the client is a faithful mirror. The Terraform resource does not
+	// surface them yet (see the resource's deferral note).
+	AppliedLabels               []AppliedLabel      `json:"appliedLabels,omitempty"`
+	EffectiveAppliedLabels      []AppliedLabel      `json:"effectiveAppliedLabels,omitempty"`      // Output only.
+	AppliedLabelFrequencyCaps   []LabelFrequencyCap `json:"appliedLabelFrequencyCaps,omitempty"`   //
+	EffectiveLabelFrequencyCaps []LabelFrequencyCap `json:"effectiveLabelFrequencyCaps,omitempty"` // Output only.
+}
+
+// AdUnitParent is an output-only summary of an ancestor ad unit.
+type AdUnitParent struct {
+	ParentAdUnit string `json:"parentAdUnit,omitempty"`
+	AdUnitCode   string `json:"adUnitCode,omitempty"`
+	DisplayName  string `json:"displayName,omitempty"`
+}
+
+// AdUnitSize is one servable size (plus environment and companions) of an ad
+// unit; it mirrors GoogleAdsAdmanagerV1__AdUnitSize.
+type AdUnitSize struct {
+	Size Size `json:"size"`
+	// Companions are only valid when EnvironmentType is VIDEO_PLAYER.
+	Companions      []Size `json:"companions,omitempty"`
+	EnvironmentType string `json:"environmentType,omitempty"` // BROWSER|VIDEO_PLAYER.
+}
+
+// Size mirrors GoogleAdsAdmanagerV1__Size. Width and Height are int32 in the
+// API; they are modeled as int64 here to line up with the Terraform Int64 type
+// (the JSON wire form is identical).
+type Size struct {
+	Width    int64  `json:"width,omitempty"`
+	Height   int64  `json:"height,omitempty"`
+	SizeType string `json:"sizeType,omitempty"` // PIXEL|ASPECT_RATIO|INTERSTITIAL|IGNORED|NATIVE|FLUID|AUDIO.
+}
+
+// AppliedLabel mirrors GoogleAdsAdmanagerV1__AppliedLabel.
+type AppliedLabel struct {
+	Label   string `json:"label,omitempty"` // networks/{network_code}/labels/{label_id}.
+	Negated bool   `json:"negated,omitempty"`
+}
+
+// LabelFrequencyCap mirrors GoogleAdsAdmanagerV1__LabelFrequencyCap.
+type LabelFrequencyCap struct {
+	Label        string        `json:"label,omitempty"`
+	FrequencyCap *FrequencyCap `json:"frequencyCap,omitempty"`
+}
+
+// FrequencyCap mirrors GoogleAdsAdmanagerV1__FrequencyCap. MaxImpressions and
+// TimeAmount are int64 values that the API encodes as JSON strings.
+type FrequencyCap struct {
+	MaxImpressions string `json:"maxImpressions,omitempty"`
+	TimeUnit       string `json:"timeUnit,omitempty"`
+	TimeAmount     string `json:"timeAmount,omitempty"`
+}
+
+// adUnitsPath is the collection path for the configured network.
+func (c *Client) adUnitsPath() string {
+	return "/v1/networks/" + url.PathEscape(c.networkCode) + "/adUnits"
+}
+
+// resourcePath turns a full resource name (networks/.../adUnits/{id}) into an
+// API path. The slashes are real path separators and must not be escaped.
+func resourcePath(name string) string {
+	return "/v1/" + name
+}
+
+// CreateAdUnit creates an ad unit under the configured network. The parent ad
+// unit is carried in au.ParentAdUnit, not the URL. It returns the created
+// resource as the API echoes it back (with all computed fields populated).
+func (c *Client) CreateAdUnit(ctx context.Context, au *AdUnit) (*AdUnit, error) {
+	var out AdUnit
+	if err := c.do(ctx, http.MethodPost, c.adUnitsPath(), nil, au, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetAdUnit fetches a single ad unit by its full resource name. A missing ad
+// unit surfaces as an *APIError with StatusCode 404 (see IsNotFound).
+func (c *Client) GetAdUnit(ctx context.Context, name string) (*AdUnit, error) {
+	var out AdUnit
+	if err := c.do(ctx, http.MethodGet, resourcePath(name), nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PatchAdUnit updates the fields named in updateMask and no others. The mask is
+// the API field-mask: a comma-joined list of the changed AdUnit field names
+// (e.g. "displayName,adUnitSizes"). Fields absent from the mask are left
+// untouched even if present in au, so callers only need to set what changes.
+func (c *Client) PatchAdUnit(ctx context.Context, au *AdUnit, updateMask []string) (*AdUnit, error) {
+	if len(updateMask) == 0 {
+		// An empty mask would ask the API to replace every field; refuse it so a
+		// caller bug cannot wipe unmanaged fields.
+		return nil, errors.New("admanager client: PatchAdUnit requires a non-empty update mask")
+	}
+	query := url.Values{"updateMask": {strings.Join(updateMask, ",")}}
+	var out AdUnit
+	if err := c.do(ctx, http.MethodPatch, resourcePath(au.Name), query, au, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ArchiveAdUnit archives exactly one ad unit via adUnits:batchArchive. The
+// resource name is the only element in the batch, so no unrelated entity can be
+// swept in. Archiving is the destroy semantics for ad units — the API has no
+// hard delete.
+func (c *Client) ArchiveAdUnit(ctx context.Context, name string) error {
+	body := struct {
+		Names []string `json:"names"`
+	}{Names: []string{name}}
+	return c.do(ctx, http.MethodPost, c.adUnitsPath()+":batchArchive", nil, body, nil)
+}
+
+// IsNotFound reports whether err is an *APIError carrying HTTP 404. Read uses
+// it to remove a resource from state when it has disappeared from Ad Manager.
+func IsNotFound(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
+}
+
+// NetworkCode returns the network code the client is scoped to. Import uses it
+// to expand a bare numeric ad unit id into a full resource name.
+func (c *Client) NetworkCode() string {
+	return c.networkCode
+}

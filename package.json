@@ -1,0 +1,12 @@
+{
+  "name": "terraform-provider-admanager-hooks",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Git hooks tooling only (husky). Users of the provider do not need Node.",
+  "scripts": {
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7"
+  }
+}
