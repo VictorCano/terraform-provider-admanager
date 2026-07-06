@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -84,8 +85,9 @@ func testAccCheckCustomTargetingValueInactive(t *testing.T) resource.TestCheckFu
 	t.Helper()
 	return func(s *terraform.State) error {
 		c := testAccClient(t)
-		for _, rs := range s.RootModule().Resources {
-			if rs.Type != "admanager_custom_targeting_value" {
+		for name, rs := range s.RootModule().Resources {
+			// Data sources share the type name; only managed resources count.
+			if strings.HasPrefix(name, "data.") || rs.Type != "admanager_custom_targeting_value" {
 				continue
 			}
 			v, err := c.GetCustomTargetingValue(context.Background(), rs.Primary.ID)

@@ -59,6 +59,12 @@ const (
 	defaultRetryBaseDelay    = 500 * time.Millisecond
 	maxRetryDelay            = 16 * time.Second
 
+	// defaultMaxListPages caps how many pages a paginated list call will fetch
+	// before erroring. It exists so a too-broad (or missing) filter cannot spin
+	// an unbounded loop of API calls; the error tells the caller to narrow the
+	// filter rather than silently truncating the results.
+	defaultMaxListPages = 100
+
 	// maxErrorBodyBytes caps how much of an error response is read into
 	// error messages.
 	maxErrorBodyBytes = 4 << 10
@@ -103,6 +109,7 @@ type Client struct {
 	limiter        *rate.Limiter
 	maxAttempts    int
 	retryBaseDelay time.Duration
+	maxListPages   int
 }
 
 // New builds a Client from cfg, resolving credentials in this order: explicit
@@ -158,6 +165,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		limiter:        rate.NewLimiter(rate.Limit(rps), 1),
 		maxAttempts:    attempts,
 		retryBaseDelay: defaultRetryBaseDelay,
+		maxListPages:   defaultMaxListPages,
 	}, nil
 }
 

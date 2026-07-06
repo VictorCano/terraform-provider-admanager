@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
@@ -139,8 +140,9 @@ func testAccCheckAdUnitArchived(t *testing.T) resource.TestCheckFunc {
 	t.Helper()
 	return func(s *terraform.State) error {
 		c := testAccClient(t)
-		for _, rs := range s.RootModule().Resources {
-			if rs.Type != "admanager_ad_unit" {
+		for name, rs := range s.RootModule().Resources {
+			// Data sources share the type name; only managed resources count.
+			if strings.HasPrefix(name, "data.") || rs.Type != "admanager_ad_unit" {
 				continue
 			}
 			au, err := c.GetAdUnit(context.Background(), rs.Primary.ID)
@@ -162,8 +164,9 @@ func testAccCheckAdUnitStillActive(t *testing.T) resource.TestCheckFunc {
 	t.Helper()
 	return func(s *terraform.State) error {
 		c := testAccClient(t)
-		for _, rs := range s.RootModule().Resources {
-			if rs.Type != "admanager_ad_unit" {
+		for name, rs := range s.RootModule().Resources {
+			// Data sources share the type name; only managed resources count.
+			if strings.HasPrefix(name, "data.") || rs.Type != "admanager_ad_unit" {
 				continue
 			}
 			au, err := c.GetAdUnit(context.Background(), rs.Primary.ID)

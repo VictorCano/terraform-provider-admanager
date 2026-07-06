@@ -46,10 +46,15 @@ type adUnitResource struct {
 	client *client.Client
 }
 
-// adUnitResourceModel is the Terraform view of an ad unit. Field ordering
-// follows the schema. Lists of primitives use types.List so null and empty are
+// adUnitModel is the shared Terraform view of an ad unit: every attribute the
+// ad_unit resource and the admanager_ad_unit data source have in common. It is
+// embedded by value into adUnitResourceModel (which adds the provider-side
+// skip_archive_on_destroy) and into the data source model (which adds nothing).
+// Embedding keeps a single source of truth for the field set and lets the
+// shared adUnitModelFromAPI mapping serve both. Field ordering follows the
+// schema. Lists of primitives use types.List so null and empty are
 // distinguishable; nested blocks use typed slices for straightforward mapping.
-type adUnitResourceModel struct {
+type adUnitModel struct {
 	ID                         types.String `tfsdk:"id"`
 	AdUnitID                   types.String `tfsdk:"ad_unit_id"`
 	ParentAdUnit               types.String `tfsdk:"parent_ad_unit"`
@@ -70,7 +75,6 @@ type adUnitResourceModel struct {
 	Sizes                      []sizeModel  `tfsdk:"sizes"`
 	AppliedTeams               types.List   `tfsdk:"applied_teams"`
 	Teams                      types.List   `tfsdk:"teams"`
-	SkipArchiveOnDestroy       types.Bool   `tfsdk:"skip_archive_on_destroy"`
 
 	// TODO(Fase 1+): applied_labels / effective_applied_labels and
 	// applied_label_frequency_caps / effective_label_frequency_caps are part of
@@ -79,6 +83,15 @@ type adUnitResourceModel struct {
 	// ordering semantics cannot be modeled with verified honest drift in this
 	// pass. The client mirrors them; the schema deliberately omits them rather
 	// than shipping half-working attributes with faked defaults.
+}
+
+// adUnitResourceModel is the resource's view of an ad unit: every shared
+// attribute plus the provider-side-only skip_archive_on_destroy. Embedded
+// fields are promoted, so existing accessors (m.DisplayName, m.ID, ...) are
+// unchanged.
+type adUnitResourceModel struct {
+	adUnitModel
+	SkipArchiveOnDestroy types.Bool `tfsdk:"skip_archive_on_destroy"`
 }
 
 // sizeModel mirrors one adUnitSizes entry.
@@ -369,12 +382,13 @@ func sizesToAPI(sizes []sizeModel) []client.AdUnitSize {
 	return out
 }
 
-// adUnitAPIToModel maps an API resource into a full Terraform model, populating
-// every attribute from what the API returned (honest drift). skipArchive is a
-// provider-side-only value carried through unchanged from the prior plan/state.
-func adUnitAPIToModel(ctx context.Context, au *client.AdUnit, skipArchive types.Bool) (adUnitResourceModel, diag.Diagnostics) {
+// adUnitModelFromAPI maps an API resource into the shared ad unit model,
+// populating every attribute from what the API returned (honest drift). Both
+// the resource (via adUnitAPIToModel) and the data source use it, so the
+// null-handling and nested-block mapping live in exactly one place.
+func adUnitModelFromAPI(ctx context.Context, au *client.AdUnit) (adUnitModel, diag.Diagnostics) {
 	var diags diag.Diagnostics
-	m := adUnitResourceModel{
+	m := adUnitModel{
 		ID:                         types.StringValue(au.Name),
 		AdUnitID:                   types.StringValue(adUnitNumericID(au)),
 		ParentAdUnit:               types.StringValue(au.ParentAdUnit),
@@ -390,7 +404,6 @@ func adUnitAPIToModel(ctx context.Context, au *client.AdUnit, skipArchive types.
 		Status:                     stringOrNull(au.Status),
 		HasChildren:                types.BoolValue(au.HasChildren),
 		UpdateTime:                 stringOrNull(au.UpdateTime),
-		SkipArchiveOnDestroy:       skipArchive,
 	}
 
 	// explicitly_targeted is optional+computed: the effective value when unset
@@ -419,6 +432,14 @@ func adUnitAPIToModel(ctx context.Context, au *client.AdUnit, skipArchive types.
 	m.Teams = teams
 
 	return m, diags
+}
+
+// adUnitAPIToModel maps an API resource into a full resource model. skipArchive
+// is a provider-side-only value carried through unchanged from the prior
+// plan/state.
+func adUnitAPIToModel(ctx context.Context, au *client.AdUnit, skipArchive types.Bool) (adUnitResourceModel, diag.Diagnostics) {
+	base, diags := adUnitModelFromAPI(ctx, au)
+	return adUnitResourceModel{adUnitModel: base, SkipArchiveOnDestroy: skipArchive}, diags
 }
 
 // adUnitNumericID prefers the API-provided numeric id and falls back to parsing

@@ -3,8 +3,10 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"golang.org/x/time/rate"
@@ -142,6 +144,74 @@ func (c *Client) CreateAdUnit(ctx context.Context, au *AdUnit) (*AdUnit, error) 
 		return nil, err
 	}
 	return &out, nil
+}
+
+// ListAdUnitsOptions carries the optional query parameters for ListAdUnits.
+// The zero value lists every ad unit in the network.
+type ListAdUnitsOptions struct {
+	// Filter is passed through verbatim to the API `filter` query parameter
+	// (AIP-160 filter syntax; see
+	// https://developers.google.com/ad-manager/api/beta/filters). Empty means no
+	// filter.
+	Filter string
+
+	// OrderBy is passed through to the API `orderBy` query parameter. Empty means
+	// the API's default ordering.
+	OrderBy string
+
+	// PageSize sets the per-request `pageSize`. Zero uses the API default (50).
+	// Larger values (up to the API max of 1000) mean fewer round trips through
+	// the rate limiter for large result sets.
+	PageSize int
+}
+
+// listAdUnitsResponse mirrors GoogleAdsAdmanagerV1__ListAdUnitsResponse. Only
+// the fields the provider consumes are decoded; totalSize is intentionally
+// omitted because the API does not populate it unless a field mask requests it.
+type listAdUnitsResponse struct {
+	AdUnits       []AdUnit `json:"adUnits"`
+	NextPageToken string   `json:"nextPageToken"`
+}
+
+// ListAdUnits returns every ad unit in the configured network that matches
+// opts, following nextPageToken across all pages. Each page is a separate GET
+// that goes through do (and therefore the rate limiter). To guard against an
+// unbounded loop from a too-broad filter, it stops after maxListPages pages and
+// returns an error rather than silently truncating.
+func (c *Client) ListAdUnits(ctx context.Context, opts ListAdUnitsOptions) ([]AdUnit, error) {
+	var out []AdUnit
+	pageToken := ""
+	for page := 1; ; page++ {
+		query := url.Values{}
+		if opts.Filter != "" {
+			query.Set("filter", opts.Filter)
+		}
+		if opts.OrderBy != "" {
+			query.Set("orderBy", opts.OrderBy)
+		}
+		if opts.PageSize > 0 {
+			query.Set("pageSize", strconv.Itoa(opts.PageSize))
+		}
+		if pageToken != "" {
+			query.Set("pageToken", pageToken)
+		}
+
+		var resp listAdUnitsResponse
+		if err := c.do(ctx, http.MethodGet, c.adUnitsPath(), query, nil, &resp); err != nil {
+			return nil, err
+		}
+		out = append(out, resp.AdUnits...)
+
+		if resp.NextPageToken == "" {
+			return out, nil
+		}
+		pageToken = resp.NextPageToken
+		if page >= c.maxListPages {
+			return nil, fmt.Errorf(
+				"admanager client: listing ad units stopped at the %d-page safety cap; the filter matched too many ad units — narrow the filter (https://developers.google.com/ad-manager/api/beta/filters) and try again",
+				c.maxListPages)
+		}
+	}
 }
 
 // GetAdUnit fetches a single ad unit by its full resource name. A missing ad

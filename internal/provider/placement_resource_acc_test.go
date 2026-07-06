@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
@@ -50,7 +51,11 @@ func testAccCheckPlacementArchived(t *testing.T) resource.TestCheckFunc {
 	t.Helper()
 	return func(s *terraform.State) error {
 		c := testAccClient(t)
-		for _, rs := range s.RootModule().Resources {
+		for name, rs := range s.RootModule().Resources {
+			// Data sources share type names; only managed resources count.
+			if strings.HasPrefix(name, "data.") {
+				continue
+			}
 			switch rs.Type {
 			case "admanager_placement":
 				p, err := c.GetPlacement(context.Background(), rs.Primary.ID)
