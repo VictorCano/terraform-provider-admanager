@@ -59,8 +59,10 @@ compatibility shim**:
   (`createCustomTargetingValues`, `updateCustomTargetingValues`,
   `performCustomTargetingValueAction` for deactivation), implemented as
   hand-built XML envelopes in `internal/soap` — no third-party SOAP library.
-- OAuth scope for SOAP is `https://www.googleapis.com/auth/dfp` (the REST
-  scope is `.../auth/admanager`); the token source must request both.
+- OAuth scopes: the client requests both `.../auth/admanager` (REST) and the
+  legacy `.../auth/dfp` (SOAP). Empirically (2026-07-06) Google aliases `dfp`
+  to `admanager` and the SOAP API accepts `admanager`-scoped tokens, so `dfp`
+  is requested defensively only.
 - **Version policy:** target a current SOAP version (v202511 or newer at
   implementation time). SOAP versions sunset ~12 months after release on a
   rolling quarterly schedule

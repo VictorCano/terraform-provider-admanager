@@ -150,6 +150,7 @@ func (p *admanagerProvider) Resources(_ context.Context) []func() resource.Resou
 		NewAdUnitResource,
 		NewPlacementResource,
 		NewCustomTargetingKeyResource,
+		NewCustomTargetingValueResource,
 	}
 }
 

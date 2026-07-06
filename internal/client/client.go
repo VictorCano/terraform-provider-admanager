@@ -39,9 +39,20 @@ import (
 const (
 	defaultBaseURL = "https://admanager.googleapis.com"
 
-	// scope grants read/write access to Ad Manager. The API also offers an
-	// admanager.readonly scope, but the provider needs to mutate entities.
-	scope = "https://www.googleapis.com/auth/admanager"
+	// scopeAdManager grants read/write access to the Ad Manager REST API. The API
+	// also offers an admanager.readonly scope, but the provider needs to mutate
+	// entities.
+	scopeAdManager = "https://www.googleapis.com/auth/admanager"
+
+	// scopeDFP is the legacy DoubleClick for Publishers scope of the SOAP API,
+	// which backs custom targeting *value* writes (the REST API has no value
+	// write endpoints; discovery doc rev 20260701). Empirically (2026-07-06)
+	// Google aliases this scope to the admanager scope at consent time and the
+	// SOAP API accepts admanager-scoped tokens, so scopeDFP may be redundant —
+	// it is still requested defensively in case the aliasing is ever undone.
+	// The SOAP shim reuses this client's HTTP client and token source. See
+	// CLAUDE.md "SOAP shim for custom targeting values".
+	scopeDFP = "https://www.googleapis.com/auth/dfp"
 
 	defaultRequestsPerSecond = 2
 	defaultMaxAttempts       = 5
@@ -128,7 +139,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		// DetectDefault uses the provided service account JSON when set and
 		// falls back to Application Default Credentials when data is nil.
 		creds, err := credentials.DetectDefault(&credentials.DetectOptions{
-			Scopes:          []string{scope},
+			Scopes:          []string{scopeAdManager, scopeDFP},
 			CredentialsJSON: data,
 		})
 		if err != nil {

@@ -35,7 +35,7 @@ There is no code path in this provider that hard-deletes anything, because the A
 Custom targeting **values** are **read-only in the Google REST API** (no create/update endpoints as of July 2026 — the December 2025 release added writes for ad units, placements, and custom targeting *keys*, but not values). To still support them as a full resource, this provider reads values through the REST API and performs **writes through the legacy SOAP API** (`CustomTargetingService`) via a small internal compatibility layer. What this means for you:
 
 - The Terraform interface is identical to every other resource — the SOAP layer is an implementation detail and will be removed transparently once Google ships value write endpoints in the REST API ([release notes](https://developers.google.com/ad-manager/api/beta/docs/release-notes)).
-- The SOAP API uses a separate OAuth scope (`https://www.googleapis.com/auth/dfp`); the provider requests it alongside the REST scope with the same service account.
+- No extra credential setup is needed: the same service account and token work for both APIs (the provider requests the legacy SOAP scope alongside the REST scope defensively, but Google currently treats them as equivalent).
 - SOAP API versions sunset on a rolling ~12-month schedule, so keeping the provider reasonably up to date matters more for this one resource than for the others. Version bumps are tracked in the [CHANGELOG](CHANGELOG.md).
 
 ## Configuration
