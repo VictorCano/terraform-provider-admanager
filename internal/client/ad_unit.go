@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"golang.org/x/time/rate"
 )
 
 // AdUnit mirrors the GoogleAdsAdmanagerV1__AdUnit resource from the discovery
@@ -192,4 +194,25 @@ func IsNotFound(err error) bool {
 // to expand a bare numeric ad unit id into a full resource name.
 func (c *Client) NetworkCode() string {
 	return c.networkCode
+}
+
+// HTTPClient returns the oauth2-authenticated HTTP client. The SOAP shim
+// (internal/soap) reuses it so custom targeting *value* writes carry the same
+// credentials as REST reads instead of building a parallel authenticated client.
+func (c *Client) HTTPClient() *http.Client {
+	return c.httpClient
+}
+
+// Limiter returns the shared client-side token bucket. The SOAP shim waits on it
+// before every call so REST and SOAP traffic draw from one rate budget; nothing
+// may bypass it.
+func (c *Client) Limiter() *rate.Limiter {
+	return c.limiter
+}
+
+// UserAgent returns the configured user agent
+// ("terraform-provider-admanager/<version>"), reused verbatim as the SOAP
+// applicationName in the RequestHeader.
+func (c *Client) UserAgent() string {
+	return c.userAgent
 }

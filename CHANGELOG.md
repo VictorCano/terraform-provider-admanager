@@ -36,3 +36,20 @@ update existing Terraform/OpenTofu configurations and state.
   becomes `INACTIVE`) — the API has no archive or hard delete for custom
   targeting keys; set `skip_archive_on_destroy = true` to drop it from state
   without touching Ad Manager.
+- `admanager_custom_targeting_value` resource: full create, read, update, and
+  import support. Custom targeting values are **read-only in the Ad Manager REST
+  API**, so this resource reads over REST but performs **writes through the
+  legacy SOAP `CustomTargetingService`** via a minimal internal compatibility
+  shim (`internal/soap`, hand-built XML — no third-party SOAP library). The SOAP
+  layer shares the REST client's authenticated HTTP client, OAuth token, and rate
+  limiter, and requests the additional `https://www.googleapis.com/auth/dfp`
+  scope alongside the REST scope. `custom_targeting_key`, `ad_tag_name` (max 40
+  characters), and `match_type` are immutable (changing any forces replacement);
+  `display_name` is the only field updated in place. `terraform destroy`
+  **deactivates** the value via the SOAP `DeleteCustomTargetingValues` action
+  (its status becomes `INACTIVE`) — values have no archive or hard delete; set
+  `skip_archive_on_destroy = true` to drop it from state without touching Ad
+  Manager. The SOAP layer is an implementation detail and will be removed
+  transparently once the REST API ships value write endpoints. The pinned SOAP
+  version (`v202605`) sunsets around May 2027 and must be bumped periodically;
+  see the README.
