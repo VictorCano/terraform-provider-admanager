@@ -148,6 +148,8 @@ func (p *admanagerProvider) Configure(ctx context.Context, req provider.Configur
 func (p *admanagerProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewAdUnitResource,
+		NewPlacementResource,
+		NewCustomTargetingKeyResource,
 	}
 }
 
