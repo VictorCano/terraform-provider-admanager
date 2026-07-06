@@ -352,6 +352,16 @@ func newAdUnitState(t *testing.T, m adUnitResourceModel) tfsdk.State {
 	return st
 }
 
+// newAdUnitPlan builds a tfsdk.Plan populated from m.
+func newAdUnitPlan(t *testing.T, m adUnitResourceModel) tfsdk.Plan {
+	t.Helper()
+	p := tfsdk.Plan{Schema: adUnitTestSchema(t)}
+	if d := p.Set(context.Background(), &m); d.HasError() {
+		t.Fatalf("building plan: %v", d)
+	}
+	return p
+}
+
 // newAdUnitTestClient builds a client pointed at srv with a static fake token.
 func newAdUnitTestClient(t *testing.T, srv *httptest.Server) *client.Client {
 	t.Helper()
