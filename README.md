@@ -23,13 +23,20 @@ There is no code path in this provider that hard-deletes anything, because the A
 | `admanager_ad_unit` | AdUnit | create, read, update, archive-on-destroy, import |
 | `admanager_placement` | Placement | create, read, update, archive-on-destroy, import |
 | `admanager_custom_targeting_key` | CustomTargetingKey | create, read, update, deactivate-on-destroy, import |
+| `admanager_custom_targeting_value` | CustomTargetingValue | create, read, update, deactivate-on-destroy, import — writes via a SOAP compatibility layer (see below) |
 
 | Data source | Use |
 |---|---|
 | `admanager_network` | Network code, effective root ad unit, time zone, currency |
 | `admanager_ad_unit` / `admanager_ad_units` | Look up existing ad units / hierarchy |
 
-**Custom targeting values** are currently **read-only in the Google REST API** (no create/update endpoints as of July 2026 — the December 2025 release added writes for ad units, placements, and custom targeting *keys*, but not values), so they cannot ship as a managed resource yet. Until Google adds write endpoints ([API release notes](https://developers.google.com/ad-manager/api/beta/docs/release-notes)), manage values in the Ad Manager UI and reference them from Terraform via data sources once available.
+### Custom targeting values use a SOAP compatibility layer
+
+Custom targeting **values** are **read-only in the Google REST API** (no create/update endpoints as of July 2026 — the December 2025 release added writes for ad units, placements, and custom targeting *keys*, but not values). To still support them as a full resource, this provider reads values through the REST API and performs **writes through the legacy SOAP API** (`CustomTargetingService`) via a small internal compatibility layer. What this means for you:
+
+- The Terraform interface is identical to every other resource — the SOAP layer is an implementation detail and will be removed transparently once Google ships value write endpoints in the REST API ([release notes](https://developers.google.com/ad-manager/api/beta/docs/release-notes)).
+- The SOAP API uses a separate OAuth scope (`https://www.googleapis.com/auth/dfp`); the provider requests it alongside the REST scope with the same service account.
+- SOAP API versions sunset on a rolling ~12-month schedule, so keeping the provider reasonably up to date matters more for this one resource than for the others. Version bumps are tracked in the [CHANGELOG](CHANGELOG.md).
 
 ## Configuration
 
