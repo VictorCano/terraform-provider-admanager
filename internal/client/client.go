@@ -324,6 +324,22 @@ func isRetryable5xx(status int) bool {
 	return false
 }
 
+// errorDetail is one entry of the google.rpc error `details` array. A single
+// struct decodes every shape the provider surfaces (ErrorInfo, BadRequest,
+// LocalizedMessage); the `@type` suffix selects which fields are meaningful.
+// Only response-body content is decoded — never headers or credentials — and
+// ErrorInfo `metadata` (consumer/project identifiers) is deliberately omitted.
+type errorDetail struct {
+	Type            string `json:"@type"`
+	Reason          string `json:"reason"`  // ErrorInfo
+	Domain          string `json:"domain"`  // ErrorInfo
+	Message         string `json:"message"` // LocalizedMessage
+	FieldViolations []struct {
+		Field       string `json:"field"`
+		Description string `json:"description"`
+	} `json:"fieldViolations"` // BadRequest
+}
+
 // parseAPIError converts a non-2xx response into an *APIError, reading at
 // most maxErrorBodyBytes of the body and always closing it.
 func parseAPIError(resp *http.Response) *APIError {
@@ -333,18 +349,63 @@ func parseAPIError(resp *http.Response) *APIError {
 	apiErr := &APIError{StatusCode: resp.StatusCode}
 	var envelope struct {
 		Error struct {
-			Message string `json:"message"`
-			Status  string `json:"status"`
+			Message string        `json:"message"`
+			Status  string        `json:"status"`
+			Details []errorDetail `json:"details"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &envelope); err == nil &&
-		(envelope.Error.Message != "" || envelope.Error.Status != "") {
+		(envelope.Error.Message != "" || envelope.Error.Status != "" || len(envelope.Error.Details) > 0) {
 		apiErr.Status = envelope.Error.Status
 		apiErr.Message = envelope.Error.Message
+		// The Ad Manager API frequently returns an opaque top-level message
+		// ("An error occurred. Please try again later.") while the actionable
+		// cause lives in the google.rpc `details` array. Fold a compact,
+		// credential-safe summary of those details into the message so
+		// diagnostics name the real reason / offending fields.
+		if summary := summarizeErrorDetails(envelope.Error.Details, envelope.Error.Message); summary != "" {
+			if apiErr.Message == "" {
+				apiErr.Message = summary
+			} else {
+				apiErr.Message += "; " + summary
+			}
+		}
 		return apiErr
 	}
 	apiErr.Message = strings.TrimSpace(string(body))
 	return apiErr
+}
+
+// summarizeErrorDetails renders a compact "; "-joined human summary of the
+// google.rpc details: ErrorInfo -> "reason: X" / "domain: Y",
+// BadRequest.fieldViolations -> "field: description", LocalizedMessage -> its
+// message (skipped when it merely echoes topMessage). It carries only
+// API-returned content — no headers, tokens, or ErrorInfo metadata.
+func summarizeErrorDetails(details []errorDetail, topMessage string) string {
+	var parts []string
+	for _, d := range details {
+		switch {
+		case strings.HasSuffix(d.Type, "ErrorInfo"):
+			if d.Reason != "" {
+				parts = append(parts, "reason: "+d.Reason)
+			}
+			if d.Domain != "" {
+				parts = append(parts, "domain: "+d.Domain)
+			}
+		case strings.HasSuffix(d.Type, "BadRequest"):
+			for _, fv := range d.FieldViolations {
+				if fv.Field == "" && fv.Description == "" {
+					continue
+				}
+				parts = append(parts, strings.TrimSpace(fv.Field+": "+fv.Description))
+			}
+		case strings.HasSuffix(d.Type, "LocalizedMessage"):
+			if d.Message != "" && d.Message != topMessage {
+				parts = append(parts, d.Message)
+			}
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 // backoff returns the delay before the retry that follows the given 1-based

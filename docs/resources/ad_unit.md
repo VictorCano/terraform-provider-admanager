@@ -5,6 +5,7 @@ subcategory: ""
 description: |-
   Manages a Google Ad Manager ad unit https://developers.google.com/ad-manager/api/beta/reference/rest/v1/networks.adUnits. Ad units are nodes in the network's inventory hierarchy.
   ~> Destroy archives, it does not delete. The Ad Manager API has no hard delete for ad units. terraform destroy archives the ad unit via adUnits:batchArchive. Set skip_archive_on_destroy = true to remove the ad unit from Terraform state without touching Ad Manager.
+  ~> An archived unit keeps its ad_unit_code reserved. Because parent_ad_unit and ad_unit_code are immutable, changing either forces replacement: Terraform destroys the current unit (archiving it) and creates a new one. The archived unit still holds its ad_unit_code, so the replacement create reuses that code and fails with 400 INVALID_ARGUMENT. To replace a unit that sets ad_unit_code, either set skip_archive_on_destroy = true on the current unit first (so it stays intact and can be re-adopted with terraform import), give the replacement a different ad_unit_code, or unarchive and import the existing unit. The provider warns about this during plan.
 ---
 
 # admanager_ad_unit (Resource)
@@ -12,6 +13,8 @@ description: |-
 Manages a Google Ad Manager [ad unit](https://developers.google.com/ad-manager/api/beta/reference/rest/v1/networks.adUnits). Ad units are nodes in the network's inventory hierarchy.
 
 ~> **Destroy archives, it does not delete.** The Ad Manager API has no hard delete for ad units. `terraform destroy` archives the ad unit via `adUnits:batchArchive`. Set `skip_archive_on_destroy = true` to remove the ad unit from Terraform state without touching Ad Manager.
+
+~> **An archived unit keeps its `ad_unit_code` reserved.** Because `parent_ad_unit` and `ad_unit_code` are immutable, changing either forces replacement: Terraform destroys the current unit (archiving it) and creates a new one. The archived unit still holds its `ad_unit_code`, so the replacement create reuses that code and fails with `400 INVALID_ARGUMENT`. To replace a unit that sets `ad_unit_code`, either set `skip_archive_on_destroy = true` on the current unit first (so it stays intact and can be re-adopted with `terraform import`), give the replacement a different `ad_unit_code`, or unarchive and import the existing unit. The provider warns about this during `plan`.
 
 ## Example Usage
 
@@ -59,6 +62,8 @@ resource "admanager_ad_unit" "homepage" {
 ### Optional
 
 - `ad_unit_code` (String) A string that uniquely identifies the ad unit for ad serving. **Immutable**. If omitted, Ad Manager assigns one based on the ad unit ID. Changing it forces replacement.
+
+An `ad_unit_code` stays **reserved by the ad unit that holds it even after that unit is archived**. Because `terraform destroy` archives rather than deletes, replacing a unit that sets `ad_unit_code` (by changing this value or another immutable attribute) archives the old unit and then fails to create the replacement with the same code (`400 INVALID_ARGUMENT`). Use `skip_archive_on_destroy`, a different code, or import-based recovery — see the resource notes above.
 - `applied_adsense_enabled` (Boolean) AdSense enablement applied directly to this ad unit. If unset, the value is inherited (see `effective_adsense_enabled`).
 - `applied_teams` (List of String) Resource names of Teams applied directly to this ad unit: `networks/{network_code}/teams/{team_id}`.
 - `description` (String) A description of the ad unit (maximum 65,535 characters).

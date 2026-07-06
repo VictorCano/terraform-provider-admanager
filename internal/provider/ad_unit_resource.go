@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -35,6 +36,7 @@ var (
 	_ resource.Resource                = (*adUnitResource)(nil)
 	_ resource.ResourceWithConfigure   = (*adUnitResource)(nil)
 	_ resource.ResourceWithImportState = (*adUnitResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*adUnitResource)(nil)
 )
 
 // NewAdUnitResource is the factory registered with the provider.
@@ -158,7 +160,14 @@ func (r *adUnitResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			"Ad units are nodes in the network's inventory hierarchy.\n\n" +
 			"~> **Destroy archives, it does not delete.** The Ad Manager API has no hard delete for ad units. " +
 			"`terraform destroy` archives the ad unit via `adUnits:batchArchive`. Set `skip_archive_on_destroy = true` " +
-			"to remove the ad unit from Terraform state without touching Ad Manager.",
+			"to remove the ad unit from Terraform state without touching Ad Manager.\n\n" +
+			"~> **An archived unit keeps its `ad_unit_code` reserved.** Because `parent_ad_unit` and `ad_unit_code` are " +
+			"immutable, changing either forces replacement: Terraform destroys the current unit (archiving it) and creates " +
+			"a new one. The archived unit still holds its `ad_unit_code`, so the replacement create reuses that code and " +
+			"fails with `400 INVALID_ARGUMENT`. To replace a unit that sets `ad_unit_code`, either set " +
+			"`skip_archive_on_destroy = true` on the current unit first (so it stays intact and can be re-adopted with " +
+			"`terraform import`), give the replacement a different `ad_unit_code`, or unarchive and import the existing unit. " +
+			"The provider warns about this during `plan`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -184,7 +193,12 @@ func (r *adUnitResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				Optional: true,
 				Computed: true,
 				MarkdownDescription: "A string that uniquely identifies the ad unit for ad serving. **Immutable**. " +
-					"If omitted, Ad Manager assigns one based on the ad unit ID. Changing it forces replacement.",
+					"If omitted, Ad Manager assigns one based on the ad unit ID. Changing it forces replacement.\n\n" +
+					"An `ad_unit_code` stays **reserved by the ad unit that holds it even after that unit is archived**. " +
+					"Because `terraform destroy` archives rather than deletes, replacing a unit that sets `ad_unit_code` " +
+					"(by changing this value or another immutable attribute) archives the old unit and then fails to create " +
+					"the replacement with the same code (`400 INVALID_ARGUMENT`). Use `skip_archive_on_destroy`, a different " +
+					"code, or import-based recovery — see the resource notes above.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 					stringplanmodifier.UseStateForUnknown(),
@@ -442,6 +456,42 @@ func adUnitAPIToModel(ctx context.Context, au *client.AdUnit, skipArchive types.
 	return adUnitResourceModel{adUnitModel: base, SkipArchiveOnDestroy: skipArchive}, diags
 }
 
+// reconcileOmittedAppliedFields keeps a prior applied value ONLY when the API
+// omitted the applied field from its response AND the effective twin corroborates
+// that the prior value is the one actually in force. This handles old (often
+// AdSense-linked) networks whose REST create/read responses echo the effective
+// twin (effectiveTargetWindow / effectiveAdsenseEnabled) but omit the applied
+// twin (appliedTargetWindow / appliedAdsenseEnabled) even though the write was
+// accepted (issue #1). Without it the honest absent->null mapping contradicts the
+// plan and Terraform rejects the apply with "inconsistent result after apply".
+//
+// This is honest drift, not diff suppression: the value is preserved only when it
+// is observably applied via its effective twin. A genuine divergence — the API
+// reports a different effective value, or there is no known prior value to
+// corroborate — still surfaces as null / whatever the API returned, so real drift
+// is never hidden. It is invoked from Create/Update against the plan value and
+// from Read against the prior state value; the data source has no prior value and
+// deliberately keeps the plain honest mapping.
+//
+// AUDIT (issue #1): smart_size_mode shares the same applied/effective inheritance
+// shape but the API exposes NO effective twin for it — there is no
+// effectiveSmartSizeMode field in the discovery doc (rev 20260701) — so an omitted
+// smartSizeMode cannot be corroborated and its behavior is intentionally left
+// unchanged here. That limitation is tracked in the PR's "deferred" notes.
+func reconcileOmittedAppliedFields(m *adUnitModel, au *client.AdUnit, prior adUnitModel) {
+	// target_window <- effectiveTargetWindow.
+	if au.AppliedTargetWindow == "" && isSet(prior.TargetWindow) &&
+		au.EffectiveTargetWindow == prior.TargetWindow.ValueString() {
+		m.TargetWindow = prior.TargetWindow
+	}
+	// applied_adsense_enabled <- effectiveAdsenseEnabled (same corroborated
+	// pattern; the effective twin is a plain output-only bool).
+	if au.AppliedAdsenseEnabled == nil && isSetBool(prior.AppliedAdsenseEnabled) &&
+		au.EffectiveAdsenseEnabled == prior.AppliedAdsenseEnabled.ValueBool() {
+		m.AppliedAdsenseEnabled = prior.AppliedAdsenseEnabled
+	}
+}
+
 // adUnitNumericID prefers the API-provided numeric id and falls back to parsing
 // it out of the resource name.
 func adUnitNumericID(au *client.AdUnit) string {
@@ -555,7 +605,7 @@ func (r *adUnitResource) Create(ctx context.Context, req resource.CreateRequest,
 
 	created, err := r.client.CreateAdUnit(ctx, au)
 	if err != nil {
-		resp.Diagnostics.AddError("Unable to create ad unit", apiErrorDetail("creating ad unit", err))
+		resp.Diagnostics.AddError("Unable to create ad unit", r.createErrorDetail(ctx, err, plan))
 		return
 	}
 
@@ -564,6 +614,9 @@ func (r *adUnitResource) Create(ctx context.Context, req resource.CreateRequest,
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	// Old-network read-back fallback: corroborate omitted applied fields against
+	// the plan value (issue #1).
+	reconcileOmittedAppliedFields(&state.adUnitModel, created, plan.adUnitModel)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -591,6 +644,9 @@ func (r *adUnitResource) Read(ctx context.Context, req resource.ReadRequest, res
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	// Old-network read-back fallback: corroborate omitted applied fields against
+	// the prior state value (issue #1).
+	reconcileOmittedAppliedFields(&newState.adUnitModel, au, state.adUnitModel)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -635,6 +691,9 @@ func (r *adUnitResource) Update(ctx context.Context, req resource.UpdateRequest,
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	// Old-network read-back fallback: corroborate omitted applied fields against
+	// the plan value (issue #1).
+	reconcileOmittedAppliedFields(&newState.adUnitModel, updated, plan.adUnitModel)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -707,6 +766,88 @@ func (r *adUnitResource) ImportState(ctx context.Context, req resource.ImportSta
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), name)...)
 }
 
+// ModifyPlan warns, at plan time, about the issue #2 reserved-code trap: when a
+// change forces this ad unit to be replaced, Terraform destroys the current unit
+// (which archives it — the API has no hard delete) and creates a new one. An
+// archived ad unit keeps its immutable ad_unit_code reserved, so the replacement
+// create reuses that code and fails with 400 INVALID_ARGUMENT, leaving the
+// original unit archived. Surfacing this during plan lets the operator choose a
+// non-destructive path before applying. It makes NO API calls — it is a pure
+// predicate over prior state and planned values.
+func (r *adUnitResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	// Only a replace of an existing unit can hit the trap. Create has no prior
+	// state; destroy has a null plan. Both are out.
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+		return
+	}
+	var state, plan adUnitResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !adUnitReplaceReservesCode(state, plan, len(resp.RequiresReplace) > 0) {
+		return
+	}
+	resp.Diagnostics.AddWarning(
+		"Replacing this ad unit archives it and reserves its ad_unit_code",
+		fmt.Sprintf(
+			"This change forces ad unit %s to be replaced: Terraform will destroy the current unit and "+
+				"create a new one. Destroy archives the unit (the Ad Manager API has no hard delete), and an "+
+				"archived ad unit keeps its ad_unit_code %q reserved. The replacement create reuses that same "+
+				"ad_unit_code and will fail with HTTP 400 INVALID_ARGUMENT because the code is still held by the "+
+				"archived unit, leaving the original unit archived.\n\n"+
+				"To avoid this, do one of:\n"+
+				"  - Set skip_archive_on_destroy = true on the current unit and apply that first, so destroy "+
+				"leaves it intact in Ad Manager; you can then re-adopt it with terraform import instead of losing it.\n"+
+				"  - Give the replacement a different ad_unit_code so its create does not collide.\n"+
+				"  - Unarchive the existing unit in Ad Manager and use terraform import to adopt it instead of replacing it.",
+			state.ID.ValueString(), state.AdUnitCode.ValueString()),
+	)
+}
+
+// adUnitReplaceReservesCode reports whether the planned change is a replace whose
+// replacement create will collide on a reserved ad_unit_code — the issue #2 trap.
+// It is a pure predicate (no API calls): a replace is detected either from a
+// differing immutable attribute (parent_ad_unit or ad_unit_code) or from the
+// framework already flagging RequiresReplace. skip_archive_on_destroy short-
+// circuits it, because then destroy touches nothing in Ad Manager and no code is
+// reserved.
+//
+// Detecting a replace is necessary but NOT sufficient: the collision only occurs
+// when the replacement create SENDS the same ad_unit_code the archived unit still
+// holds. adUnitModelToAPI sends plan.AdUnitCode only when it isSet (known and
+// non-null); an unknown or null planned code is omitted and GAM auto-assigns a
+// fresh, non-colliding one. So the trap requires the planned code to be known and
+// equal to the prior code:
+//   - Renaming ad_unit_code (old -> new) is a RequiresReplace, but the create
+//     sends the new, unreserved code and SUCCEEDS — not the trap.
+//   - Changing another immutable (e.g. parent_ad_unit) while ad_unit_code stays
+//     the same makes the create reuse the reserved code — the real trap. This
+//     also covers an auto-assigned code that UseStateForUnknown retains in the
+//     plan (plan == prior code), so it too warns.
+func adUnitReplaceReservesCode(state, plan adUnitResourceModel, frameworkRequiresReplace bool) bool {
+	isReplace := frameworkRequiresReplace ||
+		!state.ParentAdUnit.Equal(plan.ParentAdUnit) ||
+		!state.AdUnitCode.Equal(plan.AdUnitCode)
+	if !isReplace {
+		return false
+	}
+	// The destroy leg governs archiving, and it reads the prior state's opt-out.
+	if state.SkipArchiveOnDestroy.ValueBool() {
+		return false
+	}
+	// No code on the prior unit means nothing gets reserved.
+	if !isSet(state.AdUnitCode) || state.AdUnitCode.ValueString() == "" {
+		return false
+	}
+	// The collision only fires when the replacement create reuses the exact code
+	// the archived unit holds: the planned code must be known and equal to the
+	// prior code. A changed code (rename) or an omitted/unknown code cannot
+	// collide.
+	return isSet(plan.AdUnitCode) && plan.AdUnitCode.ValueString() == state.AdUnitCode.ValueString()
+}
+
 // normalizeAdUnitName accepts either a full resource name or a bare numeric id
 // and returns a full resource name scoped to networkCode.
 func normalizeAdUnitName(id, networkCode string) string {
@@ -725,6 +866,62 @@ func normalizeAdUnitName(id, networkCode string) string {
 	// ImportState emits the "Invalid import ID" diagnostic instead of passing a
 	// bad resource name straight to the API.
 	return ""
+}
+
+// createErrorDetail renders the Create failure diagnostic. The base is always
+// the detail-enriched API error. When the API rejects the create with 400
+// INVALID_ARGUMENT and the plan pinned an ad_unit_code, it additionally does a
+// best-effort lookup of who currently holds that code (archived units included)
+// and, if a holder is found, appends the holder identity and the concrete
+// recovery paths. This diagnoses the issue #2 trap where a replace archives the
+// prior unit, the archived unit keeps its immutable ad_unit_code reserved, and
+// the follow-up create then fails on the reserved code with only the opaque
+// top-level message.
+//
+// The lookup is best effort: any failure (or no match) falls back to the base
+// diagnostic so a flaky list call can never mask the real create error.
+func (r *adUnitResource) createErrorDetail(ctx context.Context, createErr error, plan adUnitResourceModel) string {
+	base := apiErrorDetail("creating ad unit", createErr)
+	if !isSet(plan.AdUnitCode) {
+		return base
+	}
+	var apiErr *client.APIError
+	if !errors.As(createErr, &apiErr) ||
+		apiErr.StatusCode != http.StatusBadRequest || apiErr.Status != "INVALID_ARGUMENT" {
+		return base
+	}
+	code := plan.AdUnitCode.ValueString()
+	holder, ok := r.findAdUnitCodeHolder(ctx, code)
+	if !ok {
+		return base
+	}
+	holderDesc := holder.Name
+	if holder.DisplayName != "" {
+		holderDesc = fmt.Sprintf("%q (%s)", holder.DisplayName, holder.Name)
+	}
+	return base + "\n\n" + fmt.Sprintf(
+		"ad_unit_code %q is already held by %s (status %s). "+
+			"Unarchive it and use terraform import, or choose a different ad_unit_code.",
+		code, holderDesc, holder.Status)
+}
+
+// findAdUnitCodeHolder best-effort looks up the ad unit that currently holds
+// code, via a server-side list filter. The filter constrains only adUnitCode and
+// adds NO status clause, so an ARCHIVED holder (the issue #2 case) is included —
+// the API returns units of every status unless a status filter excludes them.
+// The lookup goes through the client (and therefore the rate limiter). It returns
+// (nil, false) on any error or no match; the caller then falls back to the base
+// diagnostic rather than surfacing the lookup failure.
+func (r *adUnitResource) findAdUnitCodeHolder(ctx context.Context, code string) (*client.AdUnit, bool) {
+	filter := fmt.Sprintf(`adUnitCode = "%s"`, escapeFilterString(code))
+	units, err := r.client.ListAdUnits(ctx, client.ListAdUnitsOptions{
+		Filter:   filter,
+		PageSize: adUnitListPageSize,
+	})
+	if err != nil || len(units) == 0 {
+		return nil, false
+	}
+	return &units[0], true
 }
 
 // apiErrorDetail renders an actionable diagnostic detail: the operation plus,

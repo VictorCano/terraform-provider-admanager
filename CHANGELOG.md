@@ -12,6 +12,29 @@ update existing Terraform/OpenTofu configurations and state.
 
 ## [Unreleased]
 
+### Fixed
+
+- `admanager_ad_unit`: `target_window` no longer fails apply with "Provider
+  produced inconsistent result after apply … was cty.StringVal(\"BLANK\"), but
+  now null" on networks whose REST responses omit `appliedTargetWindow` even
+  though the write was accepted. When the response omits the applied field but
+  its effective twin (`effectiveTargetWindow`) corroborates the known plan/state
+  value, the resource now preserves that value; a genuine divergence still
+  surfaces honestly as drift. The same effective-corroborated fallback is applied
+  to `applied_adsense_enabled` (via `effectiveAdsenseEnabled`); `smart_size_mode`
+  has no effective twin in the API and is intentionally left unchanged.
+  ([#1](https://github.com/VictorCano/terraform-provider-admanager/issues/1))
+- `admanager_ad_unit`: create and other failures now surface the Ad Manager
+  `google.rpc` error details (`ErrorInfo.reason`/`domain`,
+  `BadRequest.fieldViolations`, `LocalizedMessage`) instead of only the opaque
+  top-level message ("An error occurred. Please try again later."). When a create
+  fails with `400 INVALID_ARGUMENT` and `ad_unit_code` was set, the provider also
+  looks up which unit (including archived ones) already holds that code and names
+  it plus the recovery paths. A replace that would archive a unit still holding an
+  `ad_unit_code` now emits a plan-time warning, and the docs describe the
+  reservation behavior.
+  ([#2](https://github.com/VictorCano/terraform-provider-admanager/issues/2))
+
 ### Added
 
 - Initial provider scaffold.
