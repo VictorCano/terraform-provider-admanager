@@ -1,0 +1,11 @@
+# gofmt check
+unformatted="$(gofmt -l .)"
+if [ -n "$unformatted" ]; then
+  echo "gofmt: the following files need formatting:" >&2
+  echo "$unformatted" >&2
+  exit 1
+fi
+
+golangci-lint run
+
+trufflehog git file://. --since-commit HEAD --fail

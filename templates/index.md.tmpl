@@ -1,0 +1,21 @@
+---
+page_title: "Google Ad Manager Provider"
+description: |-
+  Manage Google Ad Manager (GAM) configuration declaratively through the Ad Manager REST API.
+---
+
+# Google Ad Manager Provider
+
+Manage Google Ad Manager (GAM) configuration — ad units, placements, and custom targeting — declaratively through the [Ad Manager REST API](https://developers.google.com/ad-manager/api/beta).
+
+~> **Destroy means archive.** Google Ad Manager does not hard-delete most entities. `terraform destroy` archives ad units and placements and deactivates custom targeting keys. Set `skip_archive_on_destroy = true` on a resource to remove it from state without touching GAM.
+
+## Authentication
+
+The provider authenticates with a Google service account, either via a JSON key (the `credentials` attribute) or [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials). The service account must be added as a user of the Ad Manager network, and API access must be enabled for the network (Ad Manager UI → Admin → Global settings).
+
+## Example Usage
+
+{{ tffile "examples/provider/provider.tf" }}
+
+{{ .SchemaMarkdown | trimspace }}

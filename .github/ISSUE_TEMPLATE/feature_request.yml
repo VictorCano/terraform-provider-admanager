@@ -1,0 +1,45 @@
+name: Feature Request
+description: Request support for a new Google Ad Manager entity, API feature, or provider capability
+title: "[Feature]: "
+labels:
+  - enhancement
+  - triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement to terraform-provider-admanager.
+
+  - type: input
+    id: gam-entity
+    attributes:
+      label: GAM entity or API feature
+      description: Which Google Ad Manager entity, service, or API feature is this request about?
+      placeholder: "e.g. Forecast service, CustomTargetingKey, ProposalLineItem"
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case description
+      description: Describe the problem you are trying to solve and why this feature is needed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-hcl
+    attributes:
+      label: Proposed HCL shape
+      description: Optional. Sketch what the resource or data source configuration might look like.
+      render: hcl
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be willing to contribute a pull request for this feature.
+          required: false

@@ -1,0 +1,37 @@
+# Acceptance tests against a real Google Ad Manager TEST network.
+# Manual trigger only: needs repository secrets and must never run for
+# untrusted PRs. The provider test suite additionally refuses to run against
+# networks whose testNetwork flag is false.
+name: Acceptance Tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    name: TF_ACC against test network
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+      - name: Write service account credentials
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          printf '%s' "$GOOGLE_CREDENTIALS_JSON" > "$RUNNER_TEMP/sa.json"
+          chmod 600 "$RUNNER_TEMP/sa.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> "$GITHUB_ENV"
+      - name: Run acceptance tests
+        env:
+          TF_ACC: "1"
+          ADMANAGER_NETWORK_CODE: ${{ secrets.ADMANAGER_TEST_NETWORK_CODE }}
+        run: go test -v -timeout 60m ./internal/provider/

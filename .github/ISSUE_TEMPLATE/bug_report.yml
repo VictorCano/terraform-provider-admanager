@@ -1,0 +1,79 @@
+name: Bug Report
+description: Report a problem with terraform-provider-admanager
+title: "[Bug]: "
+labels:
+  - bug
+  - triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report.
+
+        Before continuing, please redact any sensitive values (GAM network codes, account IDs, order/line item IDs
+        you consider confidential) from the fields below.
+
+        **Never paste service account keys, OAuth tokens, or any other credentials in this issue.** If you believe
+        you have found a security vulnerability, do not open a public issue — use the private vulnerability
+        reporting link instead.
+
+  - type: input
+    id: provider-version
+    attributes:
+      label: Provider version
+      description: The version of terraform-provider-admanager you are using.
+      placeholder: "e.g. 0.1.0, or the git commit SHA if built from source"
+    validations:
+      required: true
+
+  - type: input
+    id: tf-version
+    attributes:
+      label: OpenTofu / Terraform version
+      description: Paste the output of `tofu -v` or `terraform -v`.
+      placeholder: "e.g. OpenTofu v1.7.1 on linux_amd64"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened and what did you expect?
+      description: Describe the actual behavior and the behavior you expected instead.
+      placeholder: |
+        What happened:
+
+        What I expected:
+    validations:
+      required: true
+
+  - type: textarea
+    id: hcl-config
+    attributes:
+      label: Minimal reproducible HCL configuration
+      description: Provide the smallest possible configuration that reproduces the issue. Redact sensitive values.
+      render: hcl
+    validations:
+      required: true
+
+  - type: textarea
+    id: log-output
+    attributes:
+      label: Relevant log output
+      description: |
+        Paste relevant output from `TF_LOG=DEBUG` or `TF_LOG=TRACE`.
+
+        WARNING: redact GAM network codes and any other sensitive identifiers if you consider them
+        confidential. NEVER paste service account keys, OAuth tokens, or other credentials — redact
+        them even in log output.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: existing-issues
+    attributes:
+      label: Existing issues
+      options:
+        - label: I have searched the existing issues and did not find one that already reports this problem.
+          required: true

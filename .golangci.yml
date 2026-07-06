@@ -1,0 +1,14 @@
+version: "2"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+linters:
+  # Standard set (errcheck, govet, ineffassign, staticcheck, unused) plus:
+  enable:
+    - gosec      # static security analysis — blocking in CI by design
+    - misspell
+    - unconvert
+    - nolintlint
