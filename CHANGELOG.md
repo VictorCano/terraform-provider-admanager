@@ -36,6 +36,23 @@ update existing Terraform/OpenTofu configurations and state.
   becomes `INACTIVE`) — the API has no archive or hard delete for custom
   targeting keys; set `skip_archive_on_destroy = true` to drop it from state
   without touching Ad Manager.
+- `admanager_network` data source: reads the provider-configured network. Takes
+  no arguments; exposes `network_code`, `display_name`, `time_zone`,
+  `currency_code`, `secondary_currency_codes`, `effective_root_ad_unit`,
+  `network_id`, `property_code`, and `test_network`. A common use is parenting a
+  top-level `admanager_ad_unit` under `effective_root_ad_unit` without
+  hardcoding the root's resource name.
+- `admanager_ad_unit` data source: looks up a single ad unit by exactly one of
+  `ad_unit_id` (a bare numeric ID or a full resource name) or `ad_unit_code`
+  (exact match via a server-side list filter). Exposes the same attribute set as
+  the `admanager_ad_unit` resource, minus `skip_archive_on_destroy`.
+- `admanager_ad_units` data source: lists ad units in the network, optionally
+  narrowed by an [AIP-160 `filter`](https://developers.google.com/ad-manager/api/beta/filters)
+  passed straight through to the API (wildcards via `*`; the `like` operator is
+  not supported). Returns `ad_units`, a list of `{id, ad_unit_id,
+  parent_ad_unit, display_name, ad_unit_code, status}`. Results are paginated
+  transparently across all pages; a too-broad filter that exceeds a 100-page
+  safety cap errors rather than truncating silently.
 - `admanager_custom_targeting_value` resource: full create, read, update, and
   import support. Custom targeting values are **read-only in the Ad Manager REST
   API**, so this resource reads over REST but performs **writes through the

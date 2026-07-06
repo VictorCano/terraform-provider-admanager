@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
@@ -36,6 +37,22 @@ func TestProviderSchema(t *testing.T) {
 	// Service account JSON must never end up in plan output or logs.
 	if attr, ok := resp.Schema.Attributes["credentials"]; ok && !attr.IsSensitive() {
 		t.Error("credentials attribute must be marked sensitive")
+	}
+}
+
+func TestProviderRegistersDataSources(t *testing.T) {
+	p := New("test")()
+	factories := p.DataSources(context.Background())
+	got := map[string]bool{}
+	for _, f := range factories {
+		resp := &datasource.MetadataResponse{}
+		f().Metadata(context.Background(), datasource.MetadataRequest{ProviderTypeName: "admanager"}, resp)
+		got[resp.TypeName] = true
+	}
+	for _, want := range []string{"admanager_network", "admanager_ad_unit", "admanager_ad_units"} {
+		if !got[want] {
+			t.Errorf("data source %q not registered; registered = %v", want, got)
+		}
 	}
 }
 
