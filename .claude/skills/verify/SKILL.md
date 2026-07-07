@@ -34,6 +34,33 @@ tofu providers schema -json | jq '.provider_schemas'
 tofu plan -no-color
 ```
 
+## Run the acceptance suite locally with OpenTofu
+
+Only against a GAM **test network** (`Network.testNetwork == true`); the suite
+aborts otherwise. `terraform` is not on this box, so drive the harness through
+`tofu`. The three `TF_ACC_*` vars work around the harness's auto-injected
+`required_providers` namespace collision (it defaults to `terraform` + the
+`hashicorp` namespace).
+
+```bash
+export ADMANAGER_TEST_NETWORK_CODE=<test-network-code>
+export GOOGLE_APPLICATION_CREDENTIALS=<path-to-sa-key.json>
+export TF_ACC=1
+export TF_ACC_TERRAFORM_PATH="$(which tofu)"
+export TF_ACC_PROVIDER_HOST=registry.opentofu.org
+export TF_ACC_PROVIDER_NAMESPACE=hashicorp
+
+go test -v -timeout 60m ./internal/provider/
+```
+
+Before a run (or after a crashed one), sweep leftover objects so a stale
+resource can't poison the suite. The sweeper archives/deactivates only
+`tf-acc-*` objects and hard-guards on `testNetwork == true` itself:
+
+```bash
+go test ./internal/provider -v -sweep=global
+```
+
 ## Gotchas
 
 - **Provider blocks are NOT validated unless some resource/data source in
