@@ -7,11 +7,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -333,6 +335,104 @@ func TestResolveCredentialsNeverLeaksContentInErrors(t *testing.T) {
 	}
 }
 
+// countingErrTransport is a RoundTripper that fails the first failN calls with a
+// transport-level error (nil response, non-nil error) and then serves a fixed
+// 200 body. failN < 0 fails every call. It lets the retry tests exercise the
+// transport-error branch (client.go:273-285) deterministically, without relying
+// on a killed listener whose attempts cannot be counted.
+type countingErrTransport struct {
+	calls int32
+	failN int32
+	body  string
+}
+
+func (t *countingErrTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	n := atomic.AddInt32(&t.calls, 1)
+	if t.failN < 0 || n <= t.failN {
+		return nil, fmt.Errorf("simulated transport failure")
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(t.body)),
+		Header:     make(http.Header),
+	}, nil
+}
+
+func TestGetRetriesOnTransportError(t *testing.T) {
+	// A transport error on a GET is ambiguous but safe to replay (the request is
+	// idempotent), so the client retries per client.go:273-285. Fail twice, then
+	// succeed on the third attempt.
+	tr := &countingErrTransport{failN: 2, body: `{"name":"networks/123456","networkCode":"123456"}`}
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	c := testClient(t, srv, Config{})
+	c.httpClient = &http.Client{Transport: tr}
+
+	if _, err := c.GetNetwork(context.Background()); err != nil {
+		t.Fatalf("GetNetwork: %v", err)
+	}
+	if got := atomic.LoadInt32(&tr.calls); got != 3 {
+		t.Errorf("transport saw %d attempts, want 3 (two failures then success)", got)
+	}
+}
+
+func TestWritesNotRetriedOnTransportError(t *testing.T) {
+	// A transport error on a write may mean the server already applied it, so
+	// writes must NOT be replayed (locked double-write protection). Exactly one
+	// attempt regardless of maxAttempts.
+	tr := &countingErrTransport{failN: -1}
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	c := testClient(t, srv, Config{})
+	c.httpClient = &http.Client{Transport: tr}
+
+	err := c.do(context.Background(), http.MethodPost, "/v1/networks/123456/adUnits", nil,
+		map[string]string{"displayName": "x"}, nil)
+	if err == nil {
+		t.Fatal("expected a transport error, got nil")
+	}
+	if got := atomic.LoadInt32(&tr.calls); got != 1 {
+		t.Errorf("transport saw %d attempts, want exactly 1 (writes are never retried on transport error)", got)
+	}
+}
+
+func TestRetryRespectsContextCancellation(t *testing.T) {
+	// While a retry is sleeping in sleepCtx (client.go:444) between attempts,
+	// cancelling ctx must return promptly with the context error, not hang for
+	// the full backoff. Use a long base delay so the sleep dominates.
+	tr := &countingErrTransport{failN: -1}
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	c := testClient(t, srv, Config{})
+	c.httpClient = &http.Client{Transport: tr}
+	c.retryBaseDelay = 3 * time.Second // backoff(1) sleeps ~1.5-3s if not cancelled
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err := c.GetNetwork(ctx)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a context error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want context.Canceled", err)
+	}
+	if elapsed > time.Second {
+		t.Errorf("returned after %v; cancellation did not interrupt the backoff sleep", elapsed)
+	}
+	// Only the first attempt ran; cancellation struck during the backoff before
+	// the second attempt could be made.
+	if got := atomic.LoadInt32(&tr.calls); got != 1 {
+		t.Errorf("transport saw %d attempts, want 1 (cancelled during backoff)", got)
+	}
+}
+
 func TestParseRetryAfter(t *testing.T) {
 	if d, ok := parseRetryAfter("3"); !ok || d != 3*time.Second {
 		t.Errorf(`parseRetryAfter("3") = %v, %v; want 3s, true`, d, ok)
@@ -347,4 +447,148 @@ func TestParseRetryAfter(t *testing.T) {
 	if _, ok := parseRetryAfter(""); ok {
 		t.Error(`parseRetryAfter("") ok = true, want false`)
 	}
+}
+
+func TestParseRetryAfterEdgeCases(t *testing.T) {
+	// "0" seconds is a valid, honored delay of zero (secs >= 0 branch).
+	if d, ok := parseRetryAfter("0"); !ok || d != 0 {
+		t.Errorf(`parseRetryAfter("0") = %v, %v; want 0, true`, d, ok)
+	}
+	// A negative seconds value is not a valid Retry-After; it must be rejected
+	// (and must not be misread as an HTTP date).
+	if d, ok := parseRetryAfter("-5"); ok {
+		t.Errorf(`parseRetryAfter("-5") = %v, %v; want _, false`, d, ok)
+	}
+	// A past HTTP-date means "retry now": ok is true with a zero delay
+	// (client.go:439), never a negative sleep.
+	past := time.Now().Add(-2 * time.Hour).UTC().Format(http.TimeFormat)
+	if d, ok := parseRetryAfter(past); !ok || d != 0 {
+		t.Errorf("parseRetryAfter(past date) = %v, %v; want 0, true", d, ok)
+	}
+	// Regression (found by FuzzParseRetryAfter): a seconds value large enough to
+	// overflow time.Duration must be treated as absent, never returned as a
+	// negative delay with ok=true.
+	if d, ok := parseRetryAfter("9227000000"); ok || d != 0 {
+		t.Errorf("parseRetryAfter(overflowing seconds) = %v, %v; want 0, false", d, ok)
+	}
+	// Pin the EXACT overflow boundary (client.go:439). math.MaxInt64/time.Second
+	// is 9223372036, so 9223372036s (~292 years) is the largest representable
+	// Retry-After and must be honored, while 9223372037s is the first value that
+	// overflows time.Duration and must be rejected. This nails the guard's `>`
+	// against an off-by-one: `>=` would wrongly discard the still-safe boundary.
+	if d, ok := parseRetryAfter("9223372036"); !ok || d != 9223372036*time.Second {
+		t.Errorf("parseRetryAfter(9223372036) = %v, %v; want %v, true", d, ok, 9223372036*time.Second)
+	}
+	if d, ok := parseRetryAfter("9223372037"); ok || d != 0 {
+		t.Errorf("parseRetryAfter(9223372037) = %v, %v; want 0, false", d, ok)
+	}
+}
+
+func TestBackoffJitterAndOverflowClamp(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	c := testClient(t, srv, Config{})
+	c.retryBaseDelay = defaultRetryBaseDelay // 500ms; testClient shrinks it otherwise
+
+	// For a normal attempt the delay is equal-jittered into [d/2, d).
+	base := defaultRetryBaseDelay
+	for i := 0; i < 500; i++ {
+		got := c.backoff(1)
+		if got < base/2 || got >= base {
+			t.Fatalf("backoff(1) = %v, want in [%v, %v)", got, base/2, base)
+		}
+	}
+
+	// A large attempt overflows the exponential term; the clamp (client.go:414)
+	// must pin the delay to maxRetryDelay, keeping the jitter in
+	// [maxRetryDelay/2, maxRetryDelay] and never producing a negative sleep.
+	for _, attempt := range []int{30, 40, 62, 63, 64, 100} {
+		for i := 0; i < 200; i++ {
+			got := c.backoff(attempt)
+			if got < maxRetryDelay/2 || got > maxRetryDelay {
+				t.Fatalf("backoff(%d) = %v, want clamped into [%v, %v]", attempt, got, maxRetryDelay/2, maxRetryDelay)
+			}
+		}
+	}
+}
+
+func TestNewResolvesInlineCredentials(t *testing.T) {
+	// With no TokenSource, New must route Config.Credentials through
+	// resolveCredentialsJSON + credentials.DetectDefault (client.go:141-156) —
+	// the credential branch every other test bypasses. An authorized_user JSON
+	// builds a token source lazily, so New succeeds without any network call.
+	inline := `{"type":"authorized_user","client_id":"id.apps.googleusercontent.com",` +
+		`"client_secret":"secret","refresh_token":"1//refresh"}`
+	c, err := New(context.Background(), Config{NetworkCode: "123456", Credentials: inline})
+	if err != nil {
+		t.Fatalf("New with inline authorized_user credentials: %v", err)
+	}
+	if c == nil || c.httpClient == nil {
+		t.Fatal("New returned a client without an HTTP client")
+	}
+
+	// A credentials blob DetectDefault cannot understand must surface a wrapped,
+	// credential-free error from the same branch.
+	badJSON := `{"type":"nonsense_type"}`
+	if _, err := New(context.Background(), Config{NetworkCode: "123456", Credentials: badJSON}); err == nil {
+		t.Fatal("expected an error for an unrecognized credentials type, got nil")
+	} else if !strings.Contains(err.Error(), "resolving Google credentials") {
+		t.Errorf("error = %v, want it wrapped as \"resolving Google credentials\"", err)
+	}
+}
+
+func TestConcurrentCallsShareOneClient(t *testing.T) {
+	// Fire many calls concurrently through a single *Client so the race detector
+	// has real cross-goroutine work on the shared limiter and HTTP client. A
+	// vacuous serial test would never exercise this.
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_, _ = fmt.Fprint(w, `{"name":"networks/123456","networkCode":"123456"}`)
+	}))
+	defer srv.Close()
+
+	c := testClient(t, srv, Config{RequestsPerSecond: 1000})
+
+	const n = 16
+	var wg sync.WaitGroup
+	errCh := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := c.GetNetwork(context.Background()); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Errorf("concurrent GetNetwork: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != n {
+		t.Errorf("server saw %d calls, want %d", got, n)
+	}
+}
+
+// FuzzParseRetryAfter throws arbitrary header values at parseRetryAfter (an
+// untrusted-input boundary: the value comes straight off the wire). It must
+// never panic, and whenever it reports a usable delay that delay must be
+// non-negative — a negative sleep would corrupt the retry loop's timing.
+func FuzzParseRetryAfter(f *testing.F) {
+	for _, seed := range []string{
+		"", "0", "3", "-5", "garbage",
+		time.Now().UTC().Format(http.TimeFormat),
+		time.Now().Add(-2 * time.Hour).UTC().Format(http.TimeFormat),
+		"99999999999999999999", "  5  ", "Wed, 21 Oct 2015 07:28:00 GMT",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, value string) {
+		d, ok := parseRetryAfter(value)
+		if ok && d < 0 {
+			t.Fatalf("parseRetryAfter(%q) reported ok with a negative delay %v", value, d)
+		}
+	})
 }

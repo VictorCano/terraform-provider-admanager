@@ -5,6 +5,7 @@ package soap
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -187,4 +188,82 @@ func TestSOAPCallWaitsOnRateLimiter(t *testing.T) {
 	if requests != 1 {
 		t.Errorf("server saw %d requests, want 1 (the limiter must gate the second call)", requests)
 	}
+}
+
+// TestAPIErrorCode exercises every arm of APIError.code(), the fallback ladder
+// that picks the most specific identifier available for one fault error.
+func TestAPIErrorCode(t *testing.T) {
+	cases := []struct {
+		name string
+		in   APIError
+		want string
+	}{
+		{"errorString wins", APIError{ErrorString: "AuthError.BAD", Type: "AuthError", Reason: "BAD"}, "AuthError.BAD"},
+		{"type and reason", APIError{Type: "AuthError", Reason: "BAD"}, "AuthError.BAD"},
+		{"reason only", APIError{Reason: "BAD"}, "BAD"},
+		{"type only", APIError{Type: "AuthError"}, "AuthError"},
+		{"all empty", APIError{}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.in.code(); got != tc.want {
+				t.Errorf("code() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseFaultNonFaultSnippetTruncated proves the fallback snippet cap
+// (soap.go:339): a large non-SOAP error body is trimmed to at most 512 bytes so
+// a hostile response cannot bloat the surfaced error.
+func TestParseFaultNonFaultSnippetTruncated(t *testing.T) {
+	raw := []byte(strings.Repeat("Z", 2000))
+	err := parseFault(http.StatusInternalServerError, raw)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	msg := err.Error()
+	if n := strings.Count(msg, "Z"); n != 512 {
+		t.Errorf("snippet carried %d body bytes, want exactly 512 (the cap)", n)
+	}
+}
+
+// faultOracle independently decides whether raw is a recognizable SOAP fault,
+// mirroring parseFault's detection condition. It gives FuzzParseFault a faithful
+// reference so the fuzzer can assert the RETURN TYPE, not just non-nilness: a
+// body carrying a faultstring or structured errors must become a *SOAPError, and
+// any regression that misroutes a real fault into the generic status-only
+// fallback (dropping Type/Reason/ErrorString/FieldPath) fails the fuzz target.
+func faultOracle(raw []byte) bool {
+	var fe faultEnvelope
+	if err := xml.Unmarshal(raw, &fe); err != nil {
+		return false
+	}
+	return fe.Fault.FaultString != "" || len(fe.Fault.Detail.APIException.Errors) > 0
+}
+
+// FuzzParseFault throws arbitrary bytes at parseFault (the SOAP response body is
+// an untrusted-input boundary). It must never panic and must always return a
+// non-nil error for a non-2xx status. When the body is a recognizable SOAP
+// fault, the error must be a *SOAPError carrying the parsed detail.
+func FuzzParseFault(f *testing.F) {
+	for _, seed := range []string{
+		faultResponse, "", "   ", "<not-xml", "<soap:Envelope></soap:Envelope>",
+		`<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><soap:Fault><faultstring>boom</faultstring></soap:Fault></soap:Body></soap:Envelope>`,
+		"Request had invalid authentication credentials.", strings.Repeat("A", 3000),
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		err := parseFault(http.StatusInternalServerError, raw)
+		if err == nil {
+			t.Fatalf("parseFault returned nil error for a non-2xx status; body=%q", raw)
+		}
+		if faultOracle(raw) {
+			var se *SOAPError
+			if !errors.As(err, &se) {
+				t.Fatalf("parseFault(%q) = %T (%v); want *SOAPError for a recognizable fault", raw, err, err)
+			}
+		}
+	})
 }
