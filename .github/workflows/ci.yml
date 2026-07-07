@@ -29,7 +29,21 @@ jobs:
           fi
       - run: go vet ./...
       - run: go build -v ./...
-      - run: go test -race -cover ./...
+      - name: Schema version / state upgrader guard
+        run: sh tools/ci/schema_version_guard.sh internal/provider
+      - run: go test -race -coverprofile=coverage.out ./...
+      - name: Coverage ratchet
+        # Coverage must not drop below the pinned floor. If a drop is
+        # intentional and justified, lower the value in
+        # .github/coverage-floor.txt in the same PR.
+        run: |
+          floor="$(cat .github/coverage-floor.txt)"
+          total="$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$NF); print $NF}')"
+          echo "Total coverage: ${total}% (floor: ${floor}%)"
+          awk -v t="$total" -v f="$floor" 'BEGIN { exit (t + 0 < f + 0) ? 1 : 0 }' || {
+            echo "::error::Coverage ${total}% is below the floor ${floor}%. Add tests, or if this drop is intentional and justified, lower the value in .github/coverage-floor.txt." >&2
+            exit 1
+          }
 
   lint:
     # golangci-lint runs with gosec enabled (see .golangci.yml), so this job
