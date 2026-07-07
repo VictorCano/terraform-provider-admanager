@@ -132,7 +132,7 @@ jobs:
           terraform_wrapper: false
       - name: Regenerate docs and fail on diff
         run: |
-          go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@latest generate
+          go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@v0.25.0 generate
           git diff --exit-code -- docs/ || {
             echo "docs/ is out of date. Run tfplugindocs generate and commit the result." >&2
             exit 1

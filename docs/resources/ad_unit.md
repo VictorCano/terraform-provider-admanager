@@ -23,8 +23,9 @@ Manages a Google Ad Manager [ad unit](https://developers.google.com/ad-manager/a
 # 300x250 medium rectangle and a 728x90 leaderboard in the browser environment.
 #
 # The parent must be an existing ad unit's resource name. For a top-level unit,
-# use the network's effectiveRootAdUnit (available from the admanager_network
-# data source once released, or from the Ad Manager UI).
+# use the network's effective root ad unit, available as
+# data.admanager_network.current.effective_root_ad_unit (or from the Ad
+# Manager UI).
 
 resource "admanager_ad_unit" "homepage" {
   parent_ad_unit = "networks/123456/adUnits/1" # the network's root ad unit
