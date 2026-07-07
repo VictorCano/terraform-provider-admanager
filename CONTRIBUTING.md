@@ -112,9 +112,10 @@ the subject line imperative and under about 72 characters.
    `go test`, `gofmt`, `golangci-lint`, and `trufflehog` all run in CI in
    addition to the local hooks.
 4. If this is your first contribution, the CLA Assistant bot will comment on
-   your PR asking you to sign the Contributor License Agreement — a one-time
-   signature; later PRs will not require it again. PRs cannot be merged until
-   the CLA is signed.
+   your PR asking you to sign the
+   [Contributor License Agreement](https://gist.github.com/VictorCano/52d7d63187b6ea5065dc797991dfad0f)
+   — a one-time signature; later PRs will not require it again. PRs cannot be
+   merged until the CLA is signed.
 5. Every PR goes through an adversarial review pass against the checklist in
    [`.github/ADVERSARIAL_REVIEW.md`](.github/ADVERSARIAL_REVIEW.md), in
    addition to normal code review. This is a deliberately skeptical pass for
