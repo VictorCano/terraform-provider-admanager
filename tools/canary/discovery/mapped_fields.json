@@ -1,0 +1,68 @@
+{
+  "GoogleAdsAdmanagerV1__AdUnit": [
+    "adUnitCode",
+    "adUnitId",
+    "adUnitSizes",
+    "appliedAdsenseEnabled",
+    "appliedLabelFrequencyCaps",
+    "appliedLabels",
+    "appliedTargetWindow",
+    "appliedTeams",
+    "description",
+    "displayName",
+    "effectiveAdsenseEnabled",
+    "effectiveAppliedLabels",
+    "effectiveLabelFrequencyCaps",
+    "effectiveTargetWindow",
+    "explicitlyTargeted",
+    "externalSetTopBoxChannelId",
+    "hasChildren",
+    "name",
+    "parentAdUnit",
+    "parentPath",
+    "refreshDelay",
+    "smartSizeMode",
+    "status",
+    "teams",
+    "updateTime"
+  ],
+  "GoogleAdsAdmanagerV1__Placement": [
+    "description",
+    "displayName",
+    "name",
+    "placementCode",
+    "placementId",
+    "status",
+    "targetedAdUnits",
+    "updateTime"
+  ],
+  "GoogleAdsAdmanagerV1__CustomTargetingKey": [
+    "adTagName",
+    "customTargetingKeyId",
+    "displayName",
+    "name",
+    "reportableType",
+    "status",
+    "type"
+  ],
+  "GoogleAdsAdmanagerV1__CustomTargetingValue": [
+    "adTagName",
+    "customTargetingKey",
+    "displayName",
+    "matchType",
+    "name",
+    "status"
+  ],
+  "GoogleAdsAdmanagerV1__Network": [
+    "currencyCode",
+    "displayName",
+    "effectiveRootAdUnit",
+    "name",
+    "networkCode",
+    "networkId",
+    "propertyCode",
+    "secondaryCurrencyCodes",
+    "testNetwork",
+    "timeZone"
+  ]
+}

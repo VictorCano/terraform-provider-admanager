@@ -27,7 +27,7 @@ public disclosure.
 
 **Fallback channel: email.**
 If you are unable to use GitHub's private reporting for any reason, email
-**victortroz@gmail.com** with as much detail as you can provide, including:
+**victor.cano at cazamba.com** with as much detail as you can provide, including:
 
 - A description of the vulnerability and its potential impact.
 - Steps to reproduce, including provider version, Terraform/OpenTofu version,
