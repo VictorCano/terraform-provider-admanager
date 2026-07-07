@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -27,6 +28,17 @@ var (
 
 // adTagNameMaxLength is the API's documented limit on adTagName (10 characters).
 const adTagNameMaxLength = 10
+
+// customTargetingKeyAdTagNameRegex enforces the documented character denylist for
+// a key's adTagName: it may not contain " ' = ! + # * ~ ; ^ ( ) < > [ ] or any
+// whitespace. Rejecting these at plan time turns a deferred server-side error into
+// an immediate one. The denylist is a superset of the value's (keys additionally
+// forbid whitespace).
+var customTargetingKeyAdTagNameRegex = regexp.MustCompile(`\A[^"'=!+#*~;^()<>\[\]\s]*\z`)
+
+// adTagNameForbiddenCharsMessage is shared by the key and value denylist
+// validators; the whitespace clause is appended by the key resource only.
+const adTagNameForbiddenCharsMessage = `must not contain any of: " ' = ! + # * ~ ; ^ ( ) < > [ ]`
 
 // Interface assertions.
 var (
@@ -85,7 +97,10 @@ func (r *customTargetingKeyResource) Schema(_ context.Context, _ resource.Schema
 				MarkdownDescription: "The name of the key as used in ad tags. **Immutable**: changing it forces replacement. " +
 					"Maximum 10 characters; may not contain `\"`, `'`, `=`, `!`, `+`, `#`, `*`, `~`, `;`, `^`, `(`, `)`, " +
 					"`<`, `>`, `[`, `]`, or whitespace.",
-				Validators:    []validator.String{stringvalidator.LengthAtMost(adTagNameMaxLength)},
+				Validators: []validator.String{
+					stringvalidator.LengthAtMost(adTagNameMaxLength),
+					stringvalidator.RegexMatches(customTargetingKeyAdTagNameRegex, adTagNameForbiddenCharsMessage+" or whitespace"),
+				},
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"display_name": schema.StringAttribute{
