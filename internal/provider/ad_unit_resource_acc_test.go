@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -21,10 +22,22 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
+	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 
 	"github.com/VictorCano/terraform-provider-admanager/internal/client"
 )
+
+// numericIDRegexp matches a bare numeric GAM object ID. Every *_id attribute in
+// these schemas is a types.String holding numericIDFromName's output, so ID
+// assertions use knownvalue.StringRegexp with this pattern — NOT
+// knownvalue.NumberFunc, which only matches json.Number state values and would
+// fail at runtime with "expected json.Number ... got: string". Shared across the
+// acceptance files in this package.
+var numericIDRegexp = regexp.MustCompile(`^\d+$`)
 
 // testAccProtoV6ProviderFactories serves the in-process provider to the test
 // harness under the name "admanager".
@@ -117,9 +130,11 @@ resource "admanager_ad_unit" "test" {
 `, networkCode, parent, displayName)
 }
 
-// testAccAdUnitConfigSkipArchive sets skip_archive_on_destroy = true so destroy
-// removes the resource from state without archiving it in Ad Manager.
-func testAccAdUnitConfigSkipArchive(networkCode, parent, displayName string) string {
+// testAccAdUnitConfigSkipArchive sets skip_archive_on_destroy to the given value.
+// When true, destroy removes the resource from state without archiving it in Ad
+// Manager. The value is a plain (non-RequiresReplace) provider-side attribute, so
+// toggling it must plan as an in-place update, never a replace.
+func testAccAdUnitConfigSkipArchive(networkCode, parent, displayName string, skip bool) string {
 	return fmt.Sprintf(`
 provider "admanager" {
   network_code = %[1]q
@@ -128,9 +143,9 @@ provider "admanager" {
 resource "admanager_ad_unit" "skip" {
   parent_ad_unit          = %[2]q
   display_name            = %[3]q
-  skip_archive_on_destroy = true
+  skip_archive_on_destroy = %[4]t
 }
-`, networkCode, parent, displayName)
+`, networkCode, parent, displayName, skip)
 }
 
 // testAccCheckAdUnitArchived verifies that every ad unit in state reads back as
@@ -217,24 +232,35 @@ func TestAccAdUnitResource_basic(t *testing.T) {
 		CheckDestroy: testAccCheckAdUnitArchived(t),
 		Steps: []resource.TestStep{
 			{
-				// Create.
+				// Create. Statechecks are the primary assertions; ExpectEmptyPlan
+				// after apply+refresh locks in zero post-create drift (this WOULD
+				// fail without reconcileOmittedAppliedFields honestly carrying the
+				// API-populated computed fields back into state).
 				Config: testAccAdUnitConfig(code, root, name),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("admanager_ad_unit.test", "display_name", name),
-					resource.TestCheckResourceAttr("admanager_ad_unit.test", "parent_ad_unit", root),
-					resource.TestCheckResourceAttrSet("admanager_ad_unit.test", "id"),
-					resource.TestCheckResourceAttrSet("admanager_ad_unit.test", "ad_unit_id"),
-					resource.TestCheckResourceAttrSet("admanager_ad_unit.test", "ad_unit_code"),
-					resource.TestCheckResourceAttr("admanager_ad_unit.test", "status", "ACTIVE"),
-					resource.TestCheckResourceAttr("admanager_ad_unit.test", "sizes.#", "2"),
-				),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("admanager_ad_unit.test", tfjsonpath.New("display_name"), knownvalue.StringExact(name)),
+					statecheck.ExpectKnownValue("admanager_ad_unit.test", tfjsonpath.New("parent_ad_unit"), knownvalue.StringExact(root)),
+					statecheck.ExpectKnownValue("admanager_ad_unit.test", tfjsonpath.New("status"), knownvalue.StringExact("ACTIVE")),
+					statecheck.ExpectKnownValue("admanager_ad_unit.test", tfjsonpath.New("ad_unit_id"), knownvalue.StringRegexp(numericIDRegexp)),
+					statecheck.ExpectKnownValue("admanager_ad_unit.test", tfjsonpath.New("id"), knownvalue.NotNull()),
+					statecheck.ExpectKnownValue("admanager_ad_unit.test", tfjsonpath.New("ad_unit_code"), knownvalue.NotNull()),
+					statecheck.ExpectKnownValue("admanager_ad_unit.test", tfjsonpath.New("sizes"), knownvalue.ListSizeExact(2)),
+				},
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
 			},
 			{
-				// Update the display name in place (patch with a field mask).
+				// Update the display name. The plan must be an in-place update, not
+				// a replace (a replace would archive+recreate a live ad unit).
 				Config: testAccAdUnitConfig(code, root, updated),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("admanager_ad_unit.test", "display_name", updated),
-				),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply:             []plancheck.PlanCheck{plancheck.ExpectResourceAction("admanager_ad_unit.test", plancheck.ResourceActionUpdate)},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("admanager_ad_unit.test", tfjsonpath.New("display_name"), knownvalue.StringExact(updated)),
+				},
 			},
 			{
 				// Import by full resource name; state must match.
@@ -272,12 +298,34 @@ func TestAccAdUnitResource_skipArchiveOnDestroy(t *testing.T) {
 		CheckDestroy:             testAccCheckAdUnitStillActive(t),
 		Steps: []resource.TestStep{
 			{
-				Config: testAccAdUnitConfigSkipArchive(code, root, name),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("admanager_ad_unit.skip", "display_name", name),
-					resource.TestCheckResourceAttr("admanager_ad_unit.skip", "skip_archive_on_destroy", "true"),
-					resource.TestCheckResourceAttr("admanager_ad_unit.skip", "status", "ACTIVE"),
-				),
+				// Create with the opt-out off.
+				Config: testAccAdUnitConfigSkipArchive(code, root, name, false),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("admanager_ad_unit.skip", tfjsonpath.New("display_name"), knownvalue.StringExact(name)),
+					statecheck.ExpectKnownValue("admanager_ad_unit.skip", tfjsonpath.New("status"), knownvalue.StringExact("ACTIVE")),
+					statecheck.ExpectKnownValue("admanager_ad_unit.skip", tfjsonpath.New("skip_archive_on_destroy"), knownvalue.Bool(false)),
+					statecheck.ExpectKnownValue("admanager_ad_unit.skip", tfjsonpath.New("ad_unit_id"), knownvalue.StringRegexp(numericIDRegexp)),
+				},
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			{
+				// Toggle skip_archive_on_destroy on. This provider-side attribute
+				// carries no RequiresReplace plan modifier, so the plan MUST be an
+				// in-place update. Asserting ResourceActionUpdate guards against a
+				// regression that made the toggle replace (archive+recreate) a live
+				// ad unit. The final state has the opt-out ON, so CheckDestroy
+				// (testAccCheckAdUnitStillActive) verifies the object is left intact.
+				Config: testAccAdUnitConfigSkipArchive(code, root, name, true),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply:             []plancheck.PlanCheck{plancheck.ExpectResourceAction("admanager_ad_unit.skip", plancheck.ResourceActionUpdate)},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("admanager_ad_unit.skip", tfjsonpath.New("skip_archive_on_destroy"), knownvalue.Bool(true)),
+					statecheck.ExpectKnownValue("admanager_ad_unit.skip", tfjsonpath.New("status"), knownvalue.StringExact("ACTIVE")),
+				},
 			},
 		},
 	})

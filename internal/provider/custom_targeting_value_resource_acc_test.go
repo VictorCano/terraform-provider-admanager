@@ -22,7 +22,11 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
+	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 
 	"github.com/VictorCano/terraform-provider-admanager/internal/client"
 )
@@ -126,24 +130,36 @@ func TestAccCustomTargetingValueResource_basic(t *testing.T) {
 			{
 				// Create (SOAP create + REST read-back).
 				Config: testAccCustomTargetingValueConfig(code, keyAdTag, valueName, "Honda"),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("admanager_custom_targeting_value.test", "ad_tag_name", valueName),
-					resource.TestCheckResourceAttr("admanager_custom_targeting_value.test", "display_name", "Honda"),
-					resource.TestCheckResourceAttr("admanager_custom_targeting_value.test", "match_type", "EXACT"),
-					resource.TestCheckResourceAttrSet("admanager_custom_targeting_value.test", "id"),
-					resource.TestCheckResourceAttrSet("admanager_custom_targeting_value.test", "custom_targeting_value_id"),
-					resource.TestCheckResourceAttrPair(
-						"admanager_custom_targeting_value.test", "custom_targeting_key",
-						"admanager_custom_targeting_key.test", "id"),
-					resource.TestCheckResourceAttr("admanager_custom_targeting_value.test", "status", "ACTIVE"),
-				),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("admanager_custom_targeting_value.test", tfjsonpath.New("ad_tag_name"), knownvalue.StringExact(valueName)),
+					statecheck.ExpectKnownValue("admanager_custom_targeting_value.test", tfjsonpath.New("display_name"), knownvalue.StringExact("Honda")),
+					statecheck.ExpectKnownValue("admanager_custom_targeting_value.test", tfjsonpath.New("match_type"), knownvalue.StringExact("EXACT")),
+					statecheck.ExpectKnownValue("admanager_custom_targeting_value.test", tfjsonpath.New("status"), knownvalue.StringExact("ACTIVE")),
+					statecheck.ExpectKnownValue("admanager_custom_targeting_value.test", tfjsonpath.New("custom_targeting_value_id"), knownvalue.StringRegexp(numericIDRegexp)),
+					statecheck.ExpectKnownValue("admanager_custom_targeting_value.test", tfjsonpath.New("id"), knownvalue.NotNull()),
+				},
+				// The custom_targeting_key value is the parent key's id (a full
+				// resource name); the cross-resource pairing has no clean statecheck
+				// analog, so it stays a legacy Check.
+				Check: resource.TestCheckResourceAttrPair(
+					"admanager_custom_targeting_value.test", "custom_targeting_key",
+					"admanager_custom_targeting_key.test", "id"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
 			},
 			{
-				// Update the mutable display_name in place (SOAP update + REST read).
+				// Update the mutable display_name (SOAP update + REST read): must
+				// plan as an in-place update, not a replace (match_type, ad_tag_name
+				// and custom_targeting_key are the RequiresReplace fields).
 				Config: testAccCustomTargetingValueConfig(code, keyAdTag, valueName, "Honda Updated"),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("admanager_custom_targeting_value.test", "display_name", "Honda Updated"),
-				),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply:             []plancheck.PlanCheck{plancheck.ExpectResourceAction("admanager_custom_targeting_value.test", plancheck.ResourceActionUpdate)},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("admanager_custom_targeting_value.test", tfjsonpath.New("display_name"), knownvalue.StringExact("Honda Updated")),
+				},
 			},
 			{
 				// Import by full resource name; state must match.
