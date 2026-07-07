@@ -30,6 +30,13 @@ var customTargetingValueMatchTypes = []string{"EXACT", "BROAD", "PREFIX", "BROAD
 // (the SOAP "name"): 40 characters.
 const adTagNameValueMaxLength = 40
 
+// customTargetingValueAdTagNameRegex enforces the documented character denylist for
+// a value's adTagName: it may not contain " ' = ! + # * ~ ; ^ ( ) < > [ ].
+// Unlike a key, a value's adTagName may contain whitespace (e.g. "New York"), so
+// whitespace is deliberately absent from this denylist. Rejecting the forbidden
+// characters at plan time turns a deferred server-side error into an immediate one.
+var customTargetingValueAdTagNameRegex = regexp.MustCompile(`\A[^"'=!+#*~;^()<>\[\]]*\z`)
+
 // soapLayerDocLink points at the README section explaining the SOAP write path.
 const soapLayerDocLink = "https://github.com/VictorCano/terraform-provider-admanager/blob/main/README.md#custom-targeting-values-use-a-soap-compatibility-layer"
 
@@ -121,7 +128,10 @@ func (r *customTargetingValueResource) Schema(_ context.Context, _ resource.Sche
 				Required: true,
 				MarkdownDescription: "The value string as used in ad tags (for key `car`, a value like `honda`). **Immutable**: changing it forces " +
 					"replacement. Maximum 40 characters; may not contain `\"`, `'`, `=`, `!`, `+`, `#`, `*`, `~`, `;`, `^`, `(`, `)`, `<`, `>`, `[`, or `]`.",
-				Validators:    []validator.String{stringvalidator.LengthAtMost(adTagNameValueMaxLength)},
+				Validators: []validator.String{
+					stringvalidator.LengthAtMost(adTagNameValueMaxLength),
+					stringvalidator.RegexMatches(customTargetingValueAdTagNameRegex, adTagNameForbiddenCharsMessage),
+				},
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"display_name": schema.StringAttribute{

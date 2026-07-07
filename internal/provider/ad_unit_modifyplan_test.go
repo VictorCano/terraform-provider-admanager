@@ -175,6 +175,44 @@ func TestModifyPlanWarnsOnReplaceThroughFramework(t *testing.T) {
 	}
 }
 
+// TestModifyPlanNoWarningWhenSkipArchiveThroughFramework drives the
+// skip_archive_on_destroy suppression through the framework (the predicate-level
+// case is covered in TestAdUnitReplaceReservesCode): a replace-forcing parent
+// change with skip_archive_on_destroy=true means destroy will not archive, so no
+// code is reserved and no warning is emitted, even though the framework flags a
+// replace.
+func TestModifyPlanNoWarningWhenSkipArchiveThroughFramework(t *testing.T) {
+	ctx := context.Background()
+	sch := adUnitTestSchema(t)
+
+	state := modelForModifyPlan()
+	state.SkipArchiveOnDestroy = types.BoolValue(true)
+	plan := modelForModifyPlan()
+	plan.SkipArchiveOnDestroy = types.BoolValue(true)
+	plan.ParentAdUnit = types.StringValue("networks/123456/adUnits/2") // forces replace
+
+	stateObj := tfsdk.State{Schema: sch}
+	if d := stateObj.Set(ctx, &state); d.HasError() {
+		t.Fatalf("set state: %v", d)
+	}
+	planObj := tfsdk.Plan{Schema: sch}
+	if d := planObj.Set(ctx, &plan); d.HasError() {
+		t.Fatalf("set plan: %v", d)
+	}
+
+	r := NewAdUnitResource().(resource.ResourceWithModifyPlan)
+	resp := &resource.ModifyPlanResponse{
+		Plan:            planObj,
+		RequiresReplace: path.Paths{path.Root("parent_ad_unit")},
+	}
+	r.ModifyPlan(ctx, resource.ModifyPlanRequest{State: stateObj, Plan: planObj}, resp)
+
+	if n := len(resp.Diagnostics.Warnings()); n != 0 {
+		t.Errorf("warnings = %d, want 0 (skip_archive_on_destroy suppresses the reserved-code warning): %v",
+			n, resp.Diagnostics.Warnings())
+	}
+}
+
 // TestModifyPlanNoWarningOnPlainUpdate: an in-place update (no immutable change,
 // no framework replace) must not warn.
 func TestModifyPlanNoWarningOnPlainUpdate(t *testing.T) {

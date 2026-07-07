@@ -37,6 +37,13 @@ update existing Terraform/OpenTofu configurations and state.
 
 ### Added
 
+- `admanager_custom_targeting_key` / `admanager_custom_targeting_value`:
+  `ad_tag_name` now rejects the characters the API forbids
+  (`" ' = ! + # * ~ ; ^ ( ) < > [ ]`, plus whitespace for keys) at plan time
+  instead of failing the apply with a server-side
+  `CUSTOM_TARGETING_ERROR_KEY_NAME_INVALID_CHARS` 400. The denylist was
+  verified against the live API; configurations that applied successfully
+  before are unaffected.
 - Initial provider scaffold.
 - REST API client with rate limiting and retries.
 - Provider configuration: `network_code`, `credentials`, `requests_per_second`, `retry_max_attempts`.
