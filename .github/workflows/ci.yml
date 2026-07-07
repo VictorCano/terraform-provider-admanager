@@ -45,6 +45,38 @@ jobs:
             exit 1
           }
 
+  fuzz:
+    # Bounded fuzzing of the untrusted-input parsers (Retry-After, SOAP faults,
+    # resource-name id extraction, and value-envelope XML escaping). Runs each
+    # target for a short, fixed budget so it fits a normal CI run. Not a gate on
+    # its own; the committed seed corpora (including regression crashers) also
+    # run as ordinary unit tests in the build job.
+    name: Fuzz (bounded)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Fuzz each target for 15s
+        # go test -fuzz accepts a single target per invocation, so loop them
+        # serially. Each entry is "package target".
+        run: |
+          set -euo pipefail
+          targets="
+          ./internal/client FuzzParseRetryAfter
+          ./internal/soap FuzzParseFault
+          ./internal/soap FuzzKeyIDFromResourceName
+          ./internal/soap FuzzValueIDFromResourceName
+          ./internal/soap FuzzValueEnvelopeRoundTrip
+          "
+          echo "$targets" | while read -r pkg target; do
+            [ -z "$pkg" ] && continue
+            echo "== fuzzing $target in $pkg =="
+            go test -run '^$' -fuzz "^${target}$" -fuzztime=15s "$pkg"
+          done
+
   lint:
     # golangci-lint runs with gosec enabled (see .golangci.yml), so this job
     # is also the blocking static security analysis pass.

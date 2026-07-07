@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 )
 
@@ -160,6 +161,26 @@ func TestPatchAdUnitSendsUpdateMask(t *testing.T) {
 	}
 	if out.DisplayName != "New Name" {
 		t.Errorf("decoded displayName = %q", out.DisplayName)
+	}
+}
+
+func TestPatchAdUnitRejectsEmptyMask(t *testing.T) {
+	// An empty mask would ask the API to replace every field; the guard must
+	// refuse it locally so the request never reaches the server. Mirrors
+	// TestPatchPlacementRejectsEmptyMask / the custom targeting key equivalent.
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		atomic.AddInt32(&calls, 1)
+	}))
+	defer srv.Close()
+
+	c := testClient(t, srv, Config{})
+	if _, err := c.PatchAdUnit(context.Background(),
+		&AdUnit{Name: "networks/123456/adUnits/456"}, nil); err == nil {
+		t.Fatal("expected an error for an empty update mask, got nil")
+	}
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Errorf("server saw %d calls, want 0 (the empty-mask guard must not send a request)", got)
 	}
 }
 
