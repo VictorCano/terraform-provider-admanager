@@ -140,7 +140,12 @@ type performActionResponse struct {
 // (WHERE customTargetingKeyId = :keyId AND id = :valueId). Ids are passed as
 // typed NumberValue bind values, never interpolated into the query string, so
 // there is no PQL-injection surface and no way to sweep in an unrelated value.
-// It returns numChanges (0 or 1).
+//
+// The action must affect EXACTLY one value. This mirrors the identity guard on
+// UpdateCustomTargetingValue: a response reporting any change count other than 1
+// is an error, so no caller can mistake "matched nothing" (numChanges=0, the
+// value was not deactivated) for success, and an over-broad match (>1) is
+// surfaced rather than silently accepted. On success it returns 1.
 func (c *Client) DeleteCustomTargetingValue(ctx context.Context, keyID, valueID int64) (int, error) {
 	req := &performActionRequest{
 		Xmlns:  apiNamespace,
@@ -156,6 +161,11 @@ func (c *Client) DeleteCustomTargetingValue(ctx context.Context, keyID, valueID 
 	var resp performActionResponse
 	if err := c.call(ctx, req, &resp); err != nil {
 		return 0, err
+	}
+	if resp.NumChanges != 1 {
+		return resp.NumChanges, fmt.Errorf(
+			"soap: deactivating custom targeting value (customTargetingKeyId=%d, id=%d) changed %d values, want exactly 1",
+			keyID, valueID, resp.NumChanges)
 	}
 	return resp.NumChanges, nil
 }

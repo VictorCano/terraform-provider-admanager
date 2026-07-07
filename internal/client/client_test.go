@@ -466,21 +466,40 @@ func TestParseRetryAfterEdgeCases(t *testing.T) {
 		t.Errorf("parseRetryAfter(past date) = %v, %v; want 0, true", d, ok)
 	}
 	// Regression (found by FuzzParseRetryAfter): a seconds value large enough to
-	// overflow time.Duration must be treated as absent, never returned as a
-	// negative delay with ok=true.
-	if d, ok := parseRetryAfter("9227000000"); ok || d != 0 {
-		t.Errorf("parseRetryAfter(overflowing seconds) = %v, %v; want 0, false", d, ok)
+	// overflow time.Duration must NOT wrap to a negative delay. The policy is to
+	// CLAMP such a value to maxRetryDelay (honored, bounded) rather than reject it,
+	// so the caller still respects the server's "back off" intent without either
+	// hammering the API or blocking for centuries.
+	if d, ok := parseRetryAfter("9227000000"); !ok || d != maxRetryDelay {
+		t.Errorf("parseRetryAfter(overflowing seconds) = %v, %v; want %v, true", d, ok, maxRetryDelay)
 	}
-	// Pin the EXACT overflow boundary (client.go:439). math.MaxInt64/time.Second
-	// is 9223372036, so 9223372036s (~292 years) is the largest representable
-	// Retry-After and must be honored, while 9223372037s is the first value that
-	// overflows time.Duration and must be rejected. This nails the guard's `>`
-	// against an off-by-one: `>=` would wrongly discard the still-safe boundary.
-	if d, ok := parseRetryAfter("9223372036"); !ok || d != 9223372036*time.Second {
-		t.Errorf("parseRetryAfter(9223372036) = %v, %v; want %v, true", d, ok, 9223372036*time.Second)
+	// The former overflow boundary (math.MaxInt64/time.Second = 9223372036) is no
+	// longer a rejection edge: both the largest representable value and the first
+	// overflowing one clamp to maxRetryDelay. A 292-year Retry-After is absurd; the
+	// point is a bounded, non-hammering wait, not literal fidelity.
+	if d, ok := parseRetryAfter("9223372036"); !ok || d != maxRetryDelay {
+		t.Errorf("parseRetryAfter(9223372036) = %v, %v; want %v, true", d, ok, maxRetryDelay)
 	}
-	if d, ok := parseRetryAfter("9223372037"); ok || d != 0 {
-		t.Errorf("parseRetryAfter(9223372037) = %v, %v; want 0, false", d, ok)
+	if d, ok := parseRetryAfter("9223372037"); !ok || d != maxRetryDelay {
+		t.Errorf("parseRetryAfter(9223372037) = %v, %v; want %v, true", d, ok, maxRetryDelay)
+	}
+	// A huge-but-representable value (well under the overflow edge) also clamps: a
+	// server asking for a multi-year wait must be bounded to maxRetryDelay too.
+	if d, ok := parseRetryAfter("94608000"); !ok || d != maxRetryDelay { // 3 years in seconds
+		t.Errorf("parseRetryAfter(3 years) = %v, %v; want %v, true", d, ok, maxRetryDelay)
+	}
+	// A value at or below the cap is honored verbatim: maxRetryDelay is 16s, so
+	// "16" returns exactly 16s and "10" exactly 10s (no clamp).
+	if d, ok := parseRetryAfter("16"); !ok || d != maxRetryDelay {
+		t.Errorf("parseRetryAfter(16) = %v, %v; want %v, true", d, ok, maxRetryDelay)
+	}
+	if d, ok := parseRetryAfter("10"); !ok || d != 10*time.Second {
+		t.Errorf("parseRetryAfter(10) = %v, %v; want 10s, true", d, ok)
+	}
+	// A far-future HTTP-date likewise clamps to maxRetryDelay.
+	farFuture := time.Now().Add(72 * time.Hour).UTC().Format(http.TimeFormat)
+	if d, ok := parseRetryAfter(farFuture); !ok || d != maxRetryDelay {
+		t.Errorf("parseRetryAfter(far-future date) = %v, %v; want %v, true", d, ok, maxRetryDelay)
 	}
 }
 
@@ -587,8 +606,11 @@ func FuzzParseRetryAfter(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, value string) {
 		d, ok := parseRetryAfter(value)
-		if ok && d < 0 {
-			t.Fatalf("parseRetryAfter(%q) reported ok with a negative delay %v", value, d)
+		// Invariant: a usable delay is always bounded to [0, maxRetryDelay]. A
+		// negative sleep would corrupt the retry loop's timing; an unbounded one
+		// would let a hostile or buggy server pin the client for centuries.
+		if ok && (d < 0 || d > maxRetryDelay) {
+			t.Fatalf("parseRetryAfter(%q) reported ok with an out-of-range delay %v (want 0..%v)", value, d, maxRetryDelay)
 		}
 	})
 }

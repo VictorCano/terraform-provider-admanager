@@ -84,7 +84,10 @@ func TestCustomTargetingKeyReadRefreshesState(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/networks/123456/customTargetingKeys/321" {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-		// The live object drifted: display name, reportable type, and status differ.
+		// The live object drifted: display name and reportable type differ. The key
+		// stays ACTIVE — an INACTIVE key is a separate path (Read removes it from
+		// state; see TestCustomTargetingKeyReadRemovesResourceWhenInactive), so a
+		// live drift test must keep the key active to exercise honest field refresh.
 		_, _ = w.Write([]byte(`{
 			"name": "networks/123456/customTargetingKeys/321",
 			"customTargetingKeyId": "321",
@@ -92,7 +95,7 @@ func TestCustomTargetingKeyReadRefreshesState(t *testing.T) {
 			"displayName": "Music Genre",
 			"type": "FREEFORM",
 			"reportableType": "CUSTOM_DIMENSION",
-			"status": "INACTIVE"
+			"status": "ACTIVE"
 		}`))
 	}))
 	defer srv.Close()
@@ -110,7 +113,7 @@ func TestCustomTargetingKeyReadRefreshesState(t *testing.T) {
 		t.Fatalf("reading state: %v", d)
 	}
 	if got.DisplayName.ValueString() != "Music Genre" || got.ReportableType.ValueString() != "CUSTOM_DIMENSION" ||
-		got.Status.ValueString() != "INACTIVE" {
+		got.Status.ValueString() != "ACTIVE" {
 		t.Errorf("read did not refresh drifted fields: %+v", got)
 	}
 	if !got.SkipArchiveOnDestroy.ValueBool() {

@@ -19,10 +19,13 @@ package provider
 // remains an open spec decision and is deliberately NOT implemented here.)
 //
 // The custom targeting KEY is the documented exception: deactivating a key also
-// resets reportable_type (ON -> OFF), a CONFIGURED attribute, so its out-of-band
-// drift is actionable and un-healable rather than absorbed. Its drift step
-// asserts that honestly (RefreshState + an enforcing plancheck.ExpectNonEmptyPlan);
-// see the step comment in TestAccCustomTargetingKeyResource_replaceAndDrift.
+// resets reportable_type (ON -> OFF), and a deactivated key can no longer be
+// patched, so absorbing the drift would strand the resource in an un-appliable
+// state. The resource Read therefore maps an INACTIVE key to RemoveResource: an
+// out-of-band deactivate + RefreshState drops it from state and the follow-up
+// plan is a clean CREATE (which reactivates the same key). Its drift step asserts
+// that with plancheck.ExpectResourceAction(ResourceActionCreate); see the step
+// comment in TestAccCustomTargetingKeyResource_replaceAndDrift.
 //
 // Form choice: a v1.16 RefreshState step runs the legacy Check (not the modern
 // ConfigStateChecks) and enforces an empty post-refresh plan itself. To use the
@@ -250,17 +253,17 @@ func TestAccCustomTargetingKeyResource_replaceAndDrift(t *testing.T) {
 				},
 			},
 			{
-				// Out-of-band deactivation of a KEY is NOT cleanly absorbed the way
-				// an ad unit / value archive is. Empirically, deactivating a key
-				// flips BOTH status (-> INACTIVE) AND reportable_type (ON -> OFF):
-				// deactivation resets the key's reportability. reportable_type is a
-				// CONFIGURED (required) attribute, so unlike a pure computed-status
-				// change this surfaces as ACTIONABLE drift — a refresh shows
-				// reportable_type drifted to OFF and Terraform plans to restore it to
-				// ON. That heal is NOT applyable (patching an inactive key fails
-				// 400 CUSTOM_TARGETING_ERROR_KEY_NOT_FOUND), so this step only
-				// RefreshState and asserts the drifted values with ExpectNonEmptyPlan,
-				// making the non-absorbed behavior an asserted, documented fact.
+				// Out-of-band deactivation of a KEY is treated as REMOVAL, not
+				// absorbed drift. Empirically, deactivating a key flips BOTH status
+				// (-> INACTIVE) AND reportable_type (ON -> OFF): deactivation resets
+				// the key's reportability. Absorbing that was wrong on two counts —
+				// reportable_type is a CONFIGURED attribute whose heal is NOT applyable
+				// (patching an INACTIVE key fails 400
+				// CUSTOM_TARGETING_ERROR_KEY_NOT_FOUND), so a plan to restore ON -> OFF
+				// could never apply. The resource Read now maps an INACTIVE key to
+				// RemoveResource, so a RefreshState drops it from state and the
+				// follow-up plan is a clean CREATE (a create reusing the same
+				// ad_tag_name reactivates the existing key — live-probed 2026-07-07).
 				PreConfig: func() {
 					if err := testAccClient(t).DeactivateCustomTargetingKey(context.Background(), id); err != nil {
 						t.Fatalf("out-of-band deactivate of key %q: %v", id, err)
@@ -268,21 +271,17 @@ func TestAccCustomTargetingKeyResource_replaceAndDrift(t *testing.T) {
 				},
 				RefreshState:       true,
 				ExpectNonEmptyPlan: true,
-				// The plain ExpectNonEmptyPlan bool above is only a one-directional
-				// guard on a RefreshState step: v1.16's refresh executor errors when
-				// the post-refresh plan is unexpectedly non-empty, but it has NO branch
-				// that fails when ExpectNonEmptyPlan is true yet the plan is empty
-				// (unlike the Config-mode executor). So the bool alone cannot detect a
-				// regression to absorbed/self-healed drift. plancheck.ExpectNonEmptyPlan()
-				// genuinely asserts at least one non-NoOp change, making the
-				// non-absorbed behavior an enforced fact rather than a documented claim.
+				// ExpectNonEmptyPlan (the bool) keeps v1.16's refresh executor from
+				// erroring on the now-non-empty post-refresh plan. ExpectResourceAction
+				// with ResourceActionCreate is the enforcing assertion: after the
+				// INACTIVE key is dropped from state, re-planning the unchanged config
+				// must schedule a create, proving the recreate semantics rather than a
+				// regression to absorbed drift.
 				RefreshPlanChecks: resource.RefreshPlanChecks{
-					PostRefresh: []plancheck.PlanCheck{plancheck.ExpectNonEmptyPlan()},
+					PostRefresh: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("admanager_custom_targeting_key.test", plancheck.ResourceActionCreate),
+					},
 				},
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("admanager_custom_targeting_key.test", "status", "INACTIVE"),
-					resource.TestCheckResourceAttr("admanager_custom_targeting_key.test", "reportable_type", "OFF"),
-				),
 			},
 		},
 	})

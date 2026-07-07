@@ -425,29 +425,40 @@ func (c *Client) backoff(attempt int) time.Duration {
 }
 
 // parseRetryAfter understands both forms of the Retry-After header: a number
-// of seconds and an HTTP date.
+// of seconds and an HTTP date. Any honored delay is CLAMPED to maxRetryDelay:
+// the header expresses the server's intent to have us wait, but the client's
+// own retry ceiling bounds how long that wait may be. Clamping (rather than
+// rejecting) keeps huge values non-hammering without blocking for centuries.
 func parseRetryAfter(value string) (time.Duration, bool) {
 	if value == "" {
 		return 0, false
 	}
 	if secs, err := strconv.Atoi(value); err == nil && secs >= 0 {
-		// Guard the seconds->Duration multiplication against int64 overflow: an
-		// absurdly large Retry-After (roughly 292 years or more) would wrap to a
-		// negative Duration, which the retry loop would then treat as "sleep
-		// zero" and hammer the API. Treat an unrepresentable value as absent so
-		// the caller falls back to bounded exponential backoff instead.
+		// The seconds->Duration multiplication can overflow int64 (roughly 292
+		// years or more), wrapping to a negative Duration. Detect that and clamp;
+		// a representable-but-huge value clamps for the same bounded-wait reason.
 		if int64(secs) > math.MaxInt64/int64(time.Second) {
-			return 0, false
+			return maxRetryDelay, true
 		}
-		return time.Duration(secs) * time.Second, true
+		return clampRetryDelay(time.Duration(secs) * time.Second), true
 	}
 	if t, err := http.ParseTime(value); err == nil {
-		if d := time.Until(t); d > 0 {
-			return d, true
+		d := time.Until(t)
+		if d <= 0 {
+			return 0, true
 		}
-		return 0, true
+		return clampRetryDelay(d), true
 	}
 	return 0, false
+}
+
+// clampRetryDelay bounds a positive Retry-After delay to the client's retry
+// ceiling, so no server value can hold a call open longer than maxRetryDelay.
+func clampRetryDelay(d time.Duration) time.Duration {
+	if d > maxRetryDelay {
+		return maxRetryDelay
+	}
+	return d
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {

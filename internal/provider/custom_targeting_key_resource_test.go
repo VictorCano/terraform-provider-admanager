@@ -220,6 +220,78 @@ func newCustomTargetingKeyState(t *testing.T, m customTargetingKeyResourceModel)
 	return st
 }
 
+// TestCustomTargetingKeyReadRemovesResourceWhenInactive: an out-of-band
+// deactivation flips a key to INACTIVE. Unlike an ad unit / value (whose archived
+// status is a computed-only field absorbed into state), a deactivated key can no
+// longer be patched (the API 400s CUSTOM_TARGETING_ERROR_KEY_NOT_FOUND on any
+// patch) and deactivation also resets reportable_type (ON -> OFF). Absorbing that
+// drift would leave a resource that fails every subsequent apply. Instead the
+// resource Read treats an INACTIVE key as gone and removes it from state, so the
+// next plan is a clean recreate (create reactivates the same key — verified live).
+func TestCustomTargetingKeyReadRemovesResourceWhenInactive(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"name":"networks/123456/customTargetingKeys/321","adTagName":"genre","type":"FREEFORM","reportableType":"OFF","status":"INACTIVE"}`))
+	}))
+	defer srv.Close()
+
+	prior, _ := customTargetingKeyAPIToModel(apiCustomTargetingKey(), types.BoolValue(false))
+	r := &customTargetingKeyResource{client: newAdUnitTestClient(t, srv)}
+	resp := &resource.ReadResponse{State: newCustomTargetingKeyState(t, prior)}
+	r.Read(ctx, resource.ReadRequest{State: newCustomTargetingKeyState(t, prior)}, resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("an INACTIVE refresh must not error; diags = %v", resp.Diagnostics)
+	}
+	if !resp.State.Raw.IsNull() {
+		t.Error("state must be removed (null) when the custom targeting key reads back INACTIVE")
+	}
+	// The removal carries an actionable warning naming the key. On an IMPORT of an
+	// INACTIVE key the framework additionally emits its generic "Cannot import
+	// non-existent remote object" error; this warning supplies the reason (the key
+	// is deactivated and must be recreated), so the operator is not left guessing.
+	if len(resp.Diagnostics.Warnings()) == 0 {
+		t.Fatal("expected a warning explaining why the INACTIVE key was removed from state")
+	}
+	if w := resp.Diagnostics.Warnings()[0]; !strings.Contains(w.Detail(), "networks/123456/customTargetingKeys/321") ||
+		!strings.Contains(strings.ToUpper(w.Detail()), "INACTIVE") {
+		t.Errorf("warning detail should name the key and its INACTIVE status; got summary=%q detail=%q", w.Summary(), w.Detail())
+	}
+}
+
+// TestCustomTargetingKeyReadKeepsActive is the complementary guard: an ACTIVE key
+// is refreshed into state normally (the INACTIVE-removes branch must not fire for
+// a live key).
+func TestCustomTargetingKeyReadKeepsActive(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"name":"networks/123456/customTargetingKeys/321","adTagName":"genre","displayName":"Genre","type":"FREEFORM","reportableType":"ON","status":"ACTIVE"}`))
+	}))
+	defer srv.Close()
+
+	prior, _ := customTargetingKeyAPIToModel(apiCustomTargetingKey(), types.BoolValue(false))
+	r := &customTargetingKeyResource{client: newAdUnitTestClient(t, srv)}
+	resp := &resource.ReadResponse{State: newCustomTargetingKeyState(t, prior)}
+	r.Read(ctx, resource.ReadRequest{State: newCustomTargetingKeyState(t, prior)}, resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Read of an ACTIVE key must not error; diags = %v", resp.Diagnostics)
+	}
+	if resp.State.Raw.IsNull() {
+		t.Fatal("state must be retained for an ACTIVE key")
+	}
+	var got customTargetingKeyResourceModel
+	if d := resp.State.Get(ctx, &got); d.HasError() {
+		t.Fatalf("reading result state: %v", d)
+	}
+	if got.Status.ValueString() != "ACTIVE" {
+		t.Errorf("status = %q, want ACTIVE", got.Status.ValueString())
+	}
+}
+
 // TestCustomTargetingKeyDeleteSurfacesRealDeactivateFailure: when
 // batchDeactivate fails for a genuine reason and the key reads back ACTIVE,
 // Delete must surface an error rather than silently drop a live key from state.
