@@ -10,6 +10,36 @@ import (
 	"testing"
 )
 
+// TestParseAPIErrorNonJSONBody exercises the fallback at client.go:345-377: a
+// plain-text / HTML body that is not the JSON error envelope must become the
+// APIError message verbatim (trimmed), with an empty Status.
+func TestParseAPIErrorNonJSONBody(t *testing.T) {
+	const body = "  <html><body>502 Bad Gateway</body></html>  "
+	apiErr := parseAPIError(responseFrom(http.StatusBadGateway, body))
+
+	if apiErr.StatusCode != http.StatusBadGateway {
+		t.Errorf("StatusCode = %d, want 502", apiErr.StatusCode)
+	}
+	if apiErr.Status != "" {
+		t.Errorf("Status = %q, want empty (non-JSON body has no canonical status)", apiErr.Status)
+	}
+	if apiErr.Message != strings.TrimSpace(body) {
+		t.Errorf("Message = %q, want the trimmed raw body %q", apiErr.Message, strings.TrimSpace(body))
+	}
+}
+
+// TestParseAPIErrorTruncatesLargeBody proves the maxErrorBodyBytes cap
+// (client.go:70): a non-JSON body larger than the cap is read only up to the
+// cap, so the surfaced message never grows unbounded with a hostile response.
+func TestParseAPIErrorTruncatesLargeBody(t *testing.T) {
+	body := strings.Repeat("A", maxErrorBodyBytes+5000)
+	apiErr := parseAPIError(responseFrom(http.StatusBadGateway, body))
+
+	if len(apiErr.Message) != maxErrorBodyBytes {
+		t.Errorf("message length = %d, want exactly maxErrorBodyBytes (%d)", len(apiErr.Message), maxErrorBodyBytes)
+	}
+}
+
 // responseFrom builds a minimal *http.Response carrying body, as parseAPIError
 // consumes it (it reads and closes Body and reads StatusCode only).
 func responseFrom(status int, body string) *http.Response {

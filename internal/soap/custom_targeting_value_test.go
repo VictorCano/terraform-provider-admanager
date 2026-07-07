@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -304,4 +305,226 @@ func TestValueResourceName(t *testing.T) {
 	if got := c.ValueResourceName(555); got != "networks/123456/customTargetingValues/555" {
 		t.Errorf("ValueResourceName = %q", got)
 	}
+}
+
+// emptyRValResponse builds a well-formed 200 SOAP response for op whose <rval>
+// list is empty, exercising the "returned no value" guards.
+func emptyRValResponse(op string) string {
+	return `<?xml version="1.0"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <` + op + `Response xmlns="https://www.google.com/apis/ads/publisher/v202605"></` + op + `Response>
+  </soap:Body>
+</soap:Envelope>`
+}
+
+func TestCreateCustomTargetingValueEmptyRValErrors(t *testing.T) {
+	// A 200 with no <rval> must not be silently accepted; the guard
+	// (custom_targeting_value.go:55-57) turns it into an error rather than
+	// indexing into an empty slice.
+	var body string
+	srv := capturingServer(t, &body, emptyRValResponse("createCustomTargetingValues"))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, "")
+	if _, err := c.CreateCustomTargetingValue(context.Background(),
+		Value{CustomTargetingKeyID: 1, Name: "x", MatchType: "EXACT"}); err == nil {
+		t.Fatal("expected an error when the service returns no value, got nil")
+	}
+}
+
+func TestUpdateCustomTargetingValueEmptyRValErrors(t *testing.T) {
+	var body string
+	srv := capturingServer(t, &body, emptyRValResponse("updateCustomTargetingValues"))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, "")
+	if _, err := c.UpdateCustomTargetingValue(context.Background(),
+		Value{CustomTargetingKeyID: 1, ID: 555, Name: "x", MatchType: "EXACT"}); err == nil {
+		t.Fatal("expected an error when the service returns no value, got nil")
+	}
+}
+
+// TestDeleteCustomTargetingValueNoIDGuard documents the CURRENT behavior: unlike
+// UpdateCustomTargetingValue (which rejects a zero id), DeleteCustomTargetingValue
+// has NO id guard — it serializes whatever ids it is handed straight into the PQL
+// bind values and issues the request. Callers pass ids already validated by
+// KeyIDFromResourceName/ValueIDFromResourceName, so this is not currently a bug,
+// but the asymmetry with Update is intentional to lock in.
+func TestDeleteCustomTargetingValueNoIDGuard(t *testing.T) {
+	var body string
+	srv := capturingServer(t, &body, `<?xml version="1.0"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body><performCustomTargetingValueActionResponse xmlns="https://www.google.com/apis/ads/publisher/v202605">
+    <rval><numChanges>0</numChanges></rval>
+  </performCustomTargetingValueActionResponse></soap:Body>
+</soap:Envelope>`)
+	defer srv.Close()
+
+	c := newTestClient(t, srv, "")
+	// Zero and negative ids are NOT rejected: the call reaches the server.
+	if _, err := c.DeleteCustomTargetingValue(context.Background(), 0, 0); err != nil {
+		t.Fatalf("DeleteCustomTargetingValue(0,0): unexpected error %v", err)
+	}
+	if !strings.Contains(body, "<value>0</value>") {
+		t.Errorf("expected zero ids serialized into the bind values, body:\n%s", body)
+	}
+
+	body = ""
+	if _, err := c.DeleteCustomTargetingValue(context.Background(), -7, -9); err != nil {
+		t.Fatalf("DeleteCustomTargetingValue(-7,-9): unexpected error %v", err)
+	}
+	if !strings.Contains(body, "<value>-7</value>") || !strings.Contains(body, "<value>-9</value>") {
+		t.Errorf("expected negative ids serialized verbatim, body:\n%s", body)
+	}
+}
+
+// TestNumericIDAcceptsNegative pins the known quirk: strconv.ParseInt accepts a
+// leading '-', so a resource name whose trailing segment is a negative integer
+// parses without error. Asserted as current behavior, not endorsed.
+func TestNumericIDAcceptsNegative(t *testing.T) {
+	got, err := KeyIDFromResourceName("networks/123456/customTargetingKeys/-5")
+	if err != nil || got != -5 {
+		t.Errorf("KeyIDFromResourceName(.../-5) = %d, %v; want -5, nil (negative-id quirk)", got, err)
+	}
+	got, err = ValueIDFromResourceName("-42")
+	if err != nil || got != -42 {
+		t.Errorf("ValueIDFromResourceName(-42) = %d, %v; want -42, nil", got, err)
+	}
+}
+
+// idOracle mirrors numericIDFromName's extraction to predict both the numeric id
+// AND whether it should error for a given name, giving the fuzz targets a
+// faithful reference. Returning the value (not just wantErr) lets the fuzzers
+// pin the extracted int64, catching value-corruption bugs in the trailing-segment
+// slicing that leave the error decision unchanged.
+func idOracle(name string) (int64, bool) { // returns id, wantErr
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return 0, true
+	}
+	idPart := trimmed
+	if i := strings.LastIndex(trimmed, "/"); i >= 0 {
+		idPart = trimmed[i+1:]
+	}
+	id, err := strconv.ParseInt(idPart, 10, 64)
+	return id, err != nil
+}
+
+// FuzzKeyIDFromResourceName drives the two-arg numericIDFromName parser through
+// its public key extractor with arbitrary resource names. It must never panic,
+// and its error decision must match the base-10 parse of the trailing segment.
+func FuzzKeyIDFromResourceName(f *testing.F) {
+	for _, seed := range []string{
+		"networks/123456/customTargetingKeys/321", "321", "", "  ",
+		"networks/123456/customTargetingKeys/abc", "networks/1/customTargetingKeys/-5",
+		"networks/1/customTargetingKeys/89", "/", "///", "networks//",
+		"99999999999999999999999", "007",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		id, err := KeyIDFromResourceName(name)
+		wantID, wantErr := idOracle(name)
+		if (err != nil) != wantErr {
+			t.Fatalf("KeyIDFromResourceName(%q) err=%v, want error=%v", name, err, wantErr)
+		}
+		if err == nil && id != wantID {
+			t.Fatalf("KeyIDFromResourceName(%q) = %d, want %d", name, id, wantID)
+		}
+	})
+}
+
+// FuzzValueIDFromResourceName is the same contract for the value extractor.
+func FuzzValueIDFromResourceName(f *testing.F) {
+	for _, seed := range []string{
+		"networks/123456/customTargetingValues/555", "555", "", "nope",
+		"networks/1/customTargetingValues/-42", "networks/1/customTargetingValues/0x10",
+		"networks/1/customTargetingValues/89", "98",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		id, err := ValueIDFromResourceName(name)
+		wantID, wantErr := idOracle(name)
+		if (err != nil) != wantErr {
+			t.Fatalf("ValueIDFromResourceName(%q) err=%v, want error=%v", name, err, wantErr)
+		}
+		if err == nil && id != wantID {
+			t.Fatalf("ValueIDFromResourceName(%q) = %d, want %d", name, id, wantID)
+		}
+	})
+}
+
+// FuzzValueEnvelopeRoundTrip proves that arbitrary value strings — including the
+// XML metacharacters &<>" and control runes — are safely escaped by
+// marshalEnvelope and cannot break out of the WSDL-ordered envelope structure.
+// The round-tripped envelope must still parse and still carry the fixed header
+// and operation element; for XML-safe inputs the value must survive intact.
+func FuzzValueEnvelopeRoundTrip(f *testing.F) {
+	for _, seed := range []string{
+		"honda", `a&b<c>d"e`, "</values><injected>", "&amp;", "\x00\x01\x02",
+		"line1\nline2", strings.Repeat("x", 300), "<?xml?>", "",
+	} {
+		f.Add(seed)
+	}
+	c := NewClient(Config{NetworkCode: "123456", ApplicationName: "app"})
+	f.Fuzz(func(t *testing.T, valueName string) {
+		// Feed DISTINCT strings into Name and DisplayName (and decode both) so the
+		// round-trip catches a Name/DisplayName field-identity or WSDL-order mixup
+		// — with identical values a swapped struct tag would go unnoticed.
+		displayName := "display:" + valueName
+		req := &createRequest{Xmlns: apiNamespace, Values: []Value{{
+			CustomTargetingKeyID: 321, Name: valueName, DisplayName: displayName, MatchType: "EXACT",
+		}}}
+		data, err := c.marshalEnvelope(req)
+		if err != nil {
+			t.Fatalf("marshalEnvelope(%q) error: %v", valueName, err)
+		}
+
+		var decoded struct {
+			NetworkCode string `xml:"Header>RequestHeader>networkCode"`
+			Op          struct {
+				XMLName     xml.Name
+				Name        string `xml:"values>name"`
+				DisplayName string `xml:"values>displayName"`
+			} `xml:"Body>createCustomTargetingValues"`
+		}
+		if err := xml.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("round-trip unmarshal failed for %q — value broke out of the envelope: %v\n%s", valueName, err, data)
+		}
+		// Structure must be intact regardless of the payload content.
+		if decoded.NetworkCode != "123456" {
+			t.Fatalf("header networkCode corrupted to %q by payload %q", decoded.NetworkCode, valueName)
+		}
+		if decoded.Op.XMLName.Local != "createCustomTargetingValues" {
+			t.Fatalf("operation element corrupted to %q by payload %q", decoded.Op.XMLName.Local, valueName)
+		}
+		// For payloads with no control runes, encoding/xml round-trips the text
+		// exactly (metacharacters are escaped, not dropped). Assert BOTH fields so a
+		// tag swap that misroutes Name into <displayName> (or vice versa) is caught.
+		if isXMLTextSafe(valueName) {
+			if decoded.Op.Name != valueName {
+				t.Fatalf("name not round-tripped: got %q, want %q", decoded.Op.Name, valueName)
+			}
+			if decoded.Op.DisplayName != displayName {
+				t.Fatalf("displayName not round-tripped: got %q, want %q", decoded.Op.DisplayName, displayName)
+			}
+		}
+	})
+}
+
+// isXMLTextSafe reports whether s contains only runes encoding/xml preserves
+// verbatim in element text (valid, non-control code points). Control runes are
+// replaced by U+FFFD, so identity round-trip is not expected for them.
+func isXMLTextSafe(s string) bool {
+	for _, r := range s {
+		if r == 0xFFFD {
+			return false
+		}
+		if r < 0x20 && r != '\t' && r != '\n' && r != '\r' {
+			return false
+		}
+	}
+	return true
 }
