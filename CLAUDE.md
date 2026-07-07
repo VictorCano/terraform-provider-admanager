@@ -27,7 +27,8 @@ it at the start of any working session if present.
   ALL API calls go through `Client.do()`: token bucket (default 2 req/s,
   burst 1), retries (429 always; 5xx/transport only for GET — double-write
   protection), `Retry-After` support. Never bypass it.
-- `internal/soap` (planned) — minimal SOAP shim, see decision below.
+- `internal/soap` — minimal SOAP shim for custom targeting value writes,
+  see decision below.
 - `internal/provider` — plugin-framework provider, resources, data sources.
 
 ## Locked decisions (do not renegotiate without Victor)
