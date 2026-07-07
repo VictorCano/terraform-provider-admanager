@@ -15,6 +15,7 @@ The first [Terraform](https://developer.hashicorp.com/terraform) / [OpenTofu](ht
 - [Import](#import)
 - [Testing](#testing)
 - [Contributing](#contributing)
+- [AI-assisted development](#ai-assisted-development)
 - [License](#license)
 
 ## Quickstart
@@ -183,6 +184,10 @@ Contributions are welcome — bug reports, new resources/data sources/attributes
 - **Unit tests require no credentials**; acceptance tests run **only against GAM test networks**.
 - `docs/` is **generated** by [`tfplugindocs`](https://github.com/hashicorp/terraform-plugin-docs) — edit `templates/` and `examples/`, never `docs/` directly.
 - **CLA:** first-time contributors sign a one-time [Contributor License Agreement](CONTRIBUTING.md#pull-request-process) (the CLA Assistant bot prompts on your first PR); later PRs do not require it again.
+
+## AI-assisted development
+
+A substantial portion of this codebase was written with AI assistance — primarily [Claude Code](https://claude.com/claude-code) (Anthropic), used by the maintainer as a pair programmer. Disclosure aside, nothing about the quality bar changes: every change, human- or AI-authored, goes through the same gates — test-driven development, an [adversarial review pass](.github/ADVERSARIAL_REVIEW.md), lint/`gosec`/`govulncheck`/secret-scan CI, a coverage ratchet, and acceptance tests against a real Google Ad Manager test network. The maintainer reviews and is accountable for every line that ships.
 
 ## License
 
