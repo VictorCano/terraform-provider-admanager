@@ -345,20 +345,28 @@ func TestUpdateCustomTargetingValueEmptyRValErrors(t *testing.T) {
 	}
 }
 
+// performActionCountResponse builds a 200 performCustomTargetingValueAction
+// response reporting the given numChanges.
+func performActionCountResponse(numChanges int) string {
+	return `<?xml version="1.0"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body><performCustomTargetingValueActionResponse xmlns="https://www.google.com/apis/ads/publisher/v202605">
+    <rval><numChanges>` + strconv.Itoa(numChanges) + `</numChanges></rval>
+  </performCustomTargetingValueActionResponse></soap:Body>
+</soap:Envelope>`
+}
+
 // TestDeleteCustomTargetingValueNoIDGuard documents the CURRENT behavior: unlike
 // UpdateCustomTargetingValue (which rejects a zero id), DeleteCustomTargetingValue
 // has NO id guard — it serializes whatever ids it is handed straight into the PQL
 // bind values and issues the request. Callers pass ids already validated by
 // KeyIDFromResourceName/ValueIDFromResourceName, so this is not currently a bug,
-// but the asymmetry with Update is intentional to lock in.
+// but the asymmetry with Update is intentional to lock in. The server returns
+// numChanges=1 here so the change-count guard (below) does not fire; this test is
+// only about how the ids reach the wire, not the response.
 func TestDeleteCustomTargetingValueNoIDGuard(t *testing.T) {
 	var body string
-	srv := capturingServer(t, &body, `<?xml version="1.0"?>
-<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-  <soap:Body><performCustomTargetingValueActionResponse xmlns="https://www.google.com/apis/ads/publisher/v202605">
-    <rval><numChanges>0</numChanges></rval>
-  </performCustomTargetingValueActionResponse></soap:Body>
-</soap:Envelope>`)
+	srv := capturingServer(t, &body, performActionCountResponse(1))
 	defer srv.Close()
 
 	c := newTestClient(t, srv, "")
@@ -376,6 +384,54 @@ func TestDeleteCustomTargetingValueNoIDGuard(t *testing.T) {
 	}
 	if !strings.Contains(body, "<value>-7</value>") || !strings.Contains(body, "<value>-9</value>") {
 		t.Errorf("expected negative ids serialized verbatim, body:\n%s", body)
+	}
+}
+
+// TestDeleteCustomTargetingValueChangeCountGuard mirrors UpdateCustomTargetingValue's
+// identity guard on the delete path: the action MUST report exactly one change.
+// numChanges=1 is the only success. numChanges=0 means the PQL statement matched
+// nothing (the value was not deactivated, so the caller must not treat it as
+// success); numChanges>1 would mean the statement swept in more than the single
+// intended value. Both are surfaced as errors naming the key/value ids and the
+// observed count.
+func TestDeleteCustomTargetingValueChangeCountGuard(t *testing.T) {
+	cases := []struct {
+		name       string
+		numChanges int
+		wantErr    bool
+	}{
+		{"zero changes is not success", 0, true},
+		{"exactly one change succeeds", 1, false},
+		{"two changes is over-broad", 2, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var body string
+			srv := capturingServer(t, &body, performActionCountResponse(tc.numChanges))
+			defer srv.Close()
+
+			c := newTestClient(t, srv, "")
+			n, err := c.DeleteCustomTargetingValue(context.Background(), 321, 555)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("numChanges=%d: expected an error, got nil (n=%d)", tc.numChanges, n)
+				}
+				// The error must name the ids and the observed count so an operator
+				// can locate the offending statement.
+				for _, want := range []string{"321", "555", strconv.Itoa(tc.numChanges)} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error %q does not mention %q", err.Error(), want)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("numChanges=%d: unexpected error %v", tc.numChanges, err)
+			}
+			if n != 1 {
+				t.Errorf("numChanges = %d, want 1", n)
+			}
+		})
 	}
 }
 

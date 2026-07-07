@@ -5,6 +5,7 @@ subcategory: ""
 description: |-
   Manages a Google Ad Manager custom targeting key https://developers.google.com/ad-manager/api/beta/reference/rest/v1/networks.customTargetingKeys. Custom targeting keys, together with their values, define key-value targeting criteria for line items.
   ~> Destroy deactivates, it does not delete. The Ad Manager API has no hard delete or archive for custom targeting keys. terraform destroy deactivates the key via customTargetingKeys:batchDeactivate (its status becomes INACTIVE). Set skip_archive_on_destroy = true to remove the key from Terraform state without touching Ad Manager.
+  ~> Deactivating a key outside Terraform triggers a recreate. A deactivated (INACTIVE) key can no longer be patched by Ad Manager, and deactivation also resets reportable_type (ON -> OFF). If a key managed here is deactivated out of band, the next terraform plan treats it as gone and plans to recreate it. The recreate is non-destructive: creating a key that reuses the same ad_tag_name reactivates the existing INACTIVE key (reusing its ID) and applies the configured display_name, type, and reportable_type.
 ---
 
 # admanager_custom_targeting_key (Resource)
@@ -12,6 +13,8 @@ description: |-
 Manages a Google Ad Manager [custom targeting key](https://developers.google.com/ad-manager/api/beta/reference/rest/v1/networks.customTargetingKeys). Custom targeting keys, together with their values, define key-value targeting criteria for line items.
 
 ~> **Destroy deactivates, it does not delete.** The Ad Manager API has no hard delete or archive for custom targeting keys. `terraform destroy` **deactivates** the key via `customTargetingKeys:batchDeactivate` (its status becomes `INACTIVE`). Set `skip_archive_on_destroy = true` to remove the key from Terraform state without touching Ad Manager.
+
+~> **Deactivating a key outside Terraform triggers a recreate.** A deactivated (`INACTIVE`) key can no longer be patched by Ad Manager, and deactivation also resets `reportable_type` (`ON` -> `OFF`). If a key managed here is deactivated out of band, the next `terraform plan` treats it as gone and plans to recreate it. The recreate is non-destructive: creating a key that reuses the same `ad_tag_name` reactivates the existing `INACTIVE` key (reusing its ID) and applies the configured `display_name`, `type`, and `reportable_type`.
 
 ## Example Usage
 

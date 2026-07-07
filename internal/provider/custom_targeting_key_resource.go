@@ -29,6 +29,11 @@ var (
 // adTagNameMaxLength is the API's documented limit on adTagName (10 characters).
 const adTagNameMaxLength = 10
 
+// customTargetingKeyStatusInactive is the API status of a deactivated key. Keys
+// have no ARCHIVED state; INACTIVE is the lifecycle end state (see the client
+// CustomTargetingKey.Status doc).
+const customTargetingKeyStatusInactive = "INACTIVE"
+
 // customTargetingKeyAdTagNameRegex enforces the documented character denylist for
 // a key's adTagName: it may not contain " ' = ! + # * ~ ; ^ ( ) < > [ ] or any
 // whitespace. Rejecting these at plan time turns a deferred server-side error into
@@ -80,7 +85,13 @@ func (r *customTargetingKeyResource) Schema(_ context.Context, _ resource.Schema
 			"~> **Destroy deactivates, it does not delete.** The Ad Manager API has no hard delete or archive for " +
 			"custom targeting keys. `terraform destroy` **deactivates** the key via `customTargetingKeys:batchDeactivate` " +
 			"(its status becomes `INACTIVE`). Set `skip_archive_on_destroy = true` to remove the key from Terraform " +
-			"state without touching Ad Manager.",
+			"state without touching Ad Manager.\n\n" +
+			"~> **Deactivating a key outside Terraform triggers a recreate.** A deactivated (`INACTIVE`) key can no " +
+			"longer be patched by Ad Manager, and deactivation also resets `reportable_type` (`ON` -> `OFF`). If a key " +
+			"managed here is deactivated out of band, the next `terraform plan` treats it as gone and plans to recreate " +
+			"it. The recreate is non-destructive: creating a key that reuses the same `ad_tag_name` reactivates the " +
+			"existing `INACTIVE` key (reusing its ID) and applies the configured `display_name`, `type`, and " +
+			"`reportable_type`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -249,6 +260,26 @@ func (r *customTargetingKeyResource) Read(ctx context.Context, req resource.Read
 		return
 	}
 
+	// A deactivated key is treated as gone. The API has no reactivate-in-place for
+	// a managed key: patching an INACTIVE key fails with
+	// CUSTOM_TARGETING_ERROR_KEY_NOT_FOUND (live-probed 2026-07-07), and
+	// deactivation also resets reportableType (ON -> OFF), so absorbing the drift
+	// would leave a resource that can never apply again. Removing it from state
+	// makes the next plan a clean recreate; because a create reusing the same
+	// ad_tag_name reactivates the existing INACTIVE key (also live-probed), the
+	// recreate is non-destructive.
+	if k.Status == customTargetingKeyStatusInactive {
+		resp.Diagnostics.AddWarning(
+			"Custom targeting key is inactive",
+			fmt.Sprintf("Custom targeting key %s is INACTIVE in Ad Manager and has been removed from Terraform state; "+
+				"a subsequent plan will recreate it (a create reusing the same ad_tag_name reactivates the existing key). "+
+				"If this happened during import, the key you referenced is deactivated: reactivate it in Ad Manager before "+
+				"importing, or let Terraform recreate it.", k.Name),
+		)
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
 	newState, diags := customTargetingKeyAPIToModel(k, state.SkipArchiveOnDestroy)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -344,7 +375,7 @@ func (r *customTargetingKeyResource) customTargetingKeyIsInactive(ctx context.Co
 		}
 		return false, err
 	}
-	return k.Status == "INACTIVE", nil
+	return k.Status == customTargetingKeyStatusInactive, nil
 }
 
 func (r *customTargetingKeyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {

@@ -14,6 +14,30 @@ update existing Terraform/OpenTofu configurations and state.
 
 ### Fixed
 
+- `admanager_custom_targeting_key`: a key deactivated outside Terraform is now
+  treated as gone and recreated on the next plan, instead of being absorbed into
+  state as `INACTIVE`. Previously the refreshed `INACTIVE` status was kept and
+  every subsequent apply failed server-side (a deactivated key cannot be patched;
+  Ad Manager returns `CUSTOM_TARGETING_ERROR_KEY_NOT_FOUND`), and the deactivation
+  also silently reset `reportable_type` from `ON` to `OFF`. Now `terraform plan`
+  schedules a create; the recreate is non-destructive because creating a key that
+  reuses the same `ad_tag_name` reactivates the existing key (reusing its ID) and
+  reapplies the configured `display_name`, `type`, and `reportable_type`. Importing
+  a key that is currently `INACTIVE` now emits a clear diagnostic explaining the
+  key is deactivated and will be recreated, rather than a bare "non-existent remote
+  object" error.
+- The provider now caps an oversized `Retry-After` response header at its maximum
+  retry delay. The two failure modes were previously handled differently and both
+  wrongly: a value large enough to overflow the internal duration was discarded and
+  replaced with ordinary backoff, while a huge-but-representable value (for example
+  a multi-year wait) was honored in full, so a single response could stall a retry
+  for years. Both cases are now clamped to the retry ceiling, so the server's
+  back-off intent is respected while the wait stays bounded and never hangs.
+- `admanager_custom_targeting_value`: destroy now verifies that Ad Manager
+  deactivated exactly one value. If the deactivation reports that nothing changed
+  (or more than one value changed), the provider surfaces an error naming the key
+  and value IDs instead of silently reporting success, so a value is never dropped
+  from state while still active in Ad Manager.
 - `admanager_ad_unit`: `target_window` no longer fails apply with "Provider
   produced inconsistent result after apply … was cty.StringVal(\"BLANK\"), but
   now null" on networks whose REST responses omit `appliedTargetWindow` even
