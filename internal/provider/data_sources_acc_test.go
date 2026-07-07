@@ -16,7 +16,11 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
+	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 )
 
 func testAccNetworkDataSourceConfig(networkCode string) string {
@@ -35,21 +39,23 @@ func TestAccNetworkDataSource_basic(t *testing.T) {
 	}
 	code := testAccNetworkCode()
 
+	// acc-test-guard:no-checkdestroy — reads a data source only; creates nothing
+	// to archive/deactivate on destroy.
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccNetworkDataSourceConfig(code),
-				Check: resource.ComposeAggregateTestCheckFunc(
+				ConfigStateChecks: []statecheck.StateCheck{
 					// The pre-check already guarantees a test network; assert the data
 					// source reports it faithfully.
-					resource.TestCheckResourceAttr("data.admanager_network.current", "test_network", "true"),
-					resource.TestCheckResourceAttr("data.admanager_network.current", "network_code", code),
-					resource.TestCheckResourceAttrSet("data.admanager_network.current", "id"),
-					resource.TestCheckResourceAttrSet("data.admanager_network.current", "display_name"),
-					resource.TestCheckResourceAttrSet("data.admanager_network.current", "effective_root_ad_unit"),
-				),
+					statecheck.ExpectKnownValue("data.admanager_network.current", tfjsonpath.New("test_network"), knownvalue.Bool(true)),
+					statecheck.ExpectKnownValue("data.admanager_network.current", tfjsonpath.New("network_code"), knownvalue.StringExact(code)),
+					statecheck.ExpectKnownValue("data.admanager_network.current", tfjsonpath.New("id"), knownvalue.NotNull()),
+					statecheck.ExpectKnownValue("data.admanager_network.current", tfjsonpath.New("display_name"), knownvalue.NotNull()),
+					statecheck.ExpectKnownValue("data.admanager_network.current", tfjsonpath.New("effective_root_ad_unit"), knownvalue.NotNull()),
+				},
 			},
 		},
 	})
@@ -97,18 +103,23 @@ func TestAccAdUnitDataSource_byIDAndCode(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				Config: testAccAdUnitDataSourceConfig(code, root, name, adUnitCode),
-				Check: resource.ComposeAggregateTestCheckFunc(
+				ConfigStateChecks: []statecheck.StateCheck{
 					// Lookup by id resolves the network's effective root ad unit.
-					resource.TestCheckResourceAttr("data.admanager_ad_unit.root", "id", root),
-					resource.TestCheckResourceAttr("data.admanager_ad_unit.root", "status", "ACTIVE"),
+					statecheck.ExpectKnownValue("data.admanager_ad_unit.root", tfjsonpath.New("id"), knownvalue.StringExact(root)),
+					statecheck.ExpectKnownValue("data.admanager_ad_unit.root", tfjsonpath.New("status"), knownvalue.StringExact("ACTIVE")),
 					// Lookup by code resolves the created child; its computed
 					// attributes match the managed resource.
-					resource.TestCheckResourceAttr("data.admanager_ad_unit.by_code", "display_name", name),
-					resource.TestCheckResourceAttr("data.admanager_ad_unit.by_code", "ad_unit_code", adUnitCode),
-					resource.TestCheckResourceAttrPair(
-						"data.admanager_ad_unit.by_code", "id",
-						"admanager_ad_unit.child", "id"),
-				),
+					statecheck.ExpectKnownValue("data.admanager_ad_unit.by_code", tfjsonpath.New("display_name"), knownvalue.StringExact(name)),
+					statecheck.ExpectKnownValue("data.admanager_ad_unit.by_code", tfjsonpath.New("ad_unit_code"), knownvalue.StringExact(adUnitCode)),
+				},
+				// The by_code data source's id must match the managed child's id; the
+				// cross-resource pairing has no clean statecheck analog.
+				Check: resource.TestCheckResourceAttrPair(
+					"data.admanager_ad_unit.by_code", "id",
+					"admanager_ad_unit.child", "id"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
 			},
 		},
 	})
@@ -176,10 +187,15 @@ func TestAccAdUnitsDataSource_childrenOfRoot(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				Config: testAccAdUnitsDataSourceConfig(code, root, name),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					// The created child must appear among the root's children.
-					testAccCheckAdUnitsListContains("data.admanager_ad_units.children", "admanager_ad_unit.child"),
-				),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("admanager_ad_unit.child", tfjsonpath.New("status"), knownvalue.StringExact("ACTIVE")),
+				},
+				// The created child must appear among the root's listed children; the
+				// list-membership assertion has no clean statecheck analog.
+				Check: testAccCheckAdUnitsListContains("data.admanager_ad_units.children", "admanager_ad_unit.child"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
 			},
 		},
 	})

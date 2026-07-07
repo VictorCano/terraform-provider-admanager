@@ -18,7 +18,11 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
+	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 )
 
 // testAccPlacementConfig creates an ad unit and a placement that targets it,
@@ -98,26 +102,35 @@ func TestAccPlacementResource_basic(t *testing.T) {
 			{
 				// Create ad unit + placement targeting it.
 				Config: testAccPlacementConfig(code, root, adUnitName, name),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("admanager_placement.test", "display_name", name),
-					resource.TestCheckResourceAttrSet("admanager_placement.test", "id"),
-					resource.TestCheckResourceAttrSet("admanager_placement.test", "placement_id"),
-					resource.TestCheckResourceAttrSet("admanager_placement.test", "placement_code"),
-					resource.TestCheckResourceAttr("admanager_placement.test", "status", "ACTIVE"),
-					resource.TestCheckResourceAttr("admanager_placement.test", "targeted_ad_units.#", "1"),
-					// targeted_ad_units is a set: elements are addressed by the "*"
-					// wildcard, not a stable numeric index.
-					resource.TestCheckTypeSetElemAttrPair(
-						"admanager_placement.test", "targeted_ad_units.*",
-						"admanager_ad_unit.target", "id"),
-				),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("admanager_placement.test", tfjsonpath.New("display_name"), knownvalue.StringExact(name)),
+					statecheck.ExpectKnownValue("admanager_placement.test", tfjsonpath.New("status"), knownvalue.StringExact("ACTIVE")),
+					statecheck.ExpectKnownValue("admanager_placement.test", tfjsonpath.New("placement_id"), knownvalue.StringRegexp(numericIDRegexp)),
+					statecheck.ExpectKnownValue("admanager_placement.test", tfjsonpath.New("id"), knownvalue.NotNull()),
+					statecheck.ExpectKnownValue("admanager_placement.test", tfjsonpath.New("placement_code"), knownvalue.NotNull()),
+					statecheck.ExpectKnownValue("admanager_placement.test", tfjsonpath.New("targeted_ad_units"), knownvalue.SetSizeExact(1)),
+				},
+				// The cross-resource set-membership assertion (that the placement
+				// targets the created ad unit's id) has no clean statecheck analog,
+				// so it stays a legacy Check. targeted_ad_units is a set: elements
+				// are addressed by the "*" wildcard, not a stable numeric index.
+				Check: resource.TestCheckTypeSetElemAttrPair(
+					"admanager_placement.test", "targeted_ad_units.*",
+					"admanager_ad_unit.target", "id"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
 			},
 			{
-				// Update the display name in place (patch with a field mask).
+				// Update the display name: must plan as an in-place update.
 				Config: testAccPlacementConfig(code, root, adUnitName, updated),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("admanager_placement.test", "display_name", updated),
-				),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply:             []plancheck.PlanCheck{plancheck.ExpectResourceAction("admanager_placement.test", plancheck.ResourceActionUpdate)},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("admanager_placement.test", tfjsonpath.New("display_name"), knownvalue.StringExact(updated)),
+				},
 			},
 			{
 				// Import by full resource name; state must match.
