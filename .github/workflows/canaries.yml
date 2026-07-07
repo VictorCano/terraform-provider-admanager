@@ -1,0 +1,118 @@
+# Maintainer-protection canaries. These are NOT required checks and never gate a
+# PR; they run on a schedule and open a labelled issue when something drifts.
+#
+#   soap-version : monthly — the SOAP shim version constant approaches its
+#                  ~12-month sunset (a stale constant breaks value writes).
+#   discovery    : weekly  — a mapped discovery-doc field was added, removed, or
+#                  changed type (the schema mirror is out of date).
+#
+# Manual `workflow_dispatch` runs both. Issue creation is idempotent: an open
+# issue with the "canary" label and the same marker title is not duplicated.
+name: Canaries
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 1 * *" # monthly, 1st @ 06:00 UTC — soap-version
+    - cron: "0 6 * * 1" # weekly, Monday @ 06:00 UTC — discovery
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  soap-version:
+    name: SOAP version sunset canary
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 6 1 * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run SOAP version canary
+        id: canary
+        run: |
+          set +e
+          out="$(go run ./tools/canary/soapversion 2>&1)"
+          code=$?
+          echo "$out"
+          {
+            echo "code=$code"
+            echo "output<<CANARY_EOF"
+            echo "$out"
+            echo "CANARY_EOF"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Open issue on stale version
+        if: steps.canary.outputs.code == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "canary: SOAP shim version approaching sunset"
+          OUTPUT: ${{ steps.canary.outputs.output }}
+        run: |
+          gh label create canary --color FBCA04 --description "Automated maintainer canary" --force
+          # Capture the listing in its own step so a gh/API failure aborts here
+          # (set -e) instead of being misread as "no existing issue" and filing a
+          # duplicate. grep runs separately, so its exit 1 (no match) is not an error.
+          titles="$(gh issue list --state open --label canary --search "\"$TITLE\" in:title" --json title --jq '.[].title')"
+          if printf '%s\n' "$titles" | grep -Fxq "$TITLE"; then
+            echo "An open canary issue titled \"$TITLE\" already exists; skipping."
+            exit 0
+          fi
+          gh issue create --title "$TITLE" --label canary --body "$(printf 'The SOAP shim version constant (internal/soap/soap.go) is nearing its sunset.\n\nBump `soapVersion` to the newest available version and delete this issue.\nDeprecation schedule: https://developers.google.com/ad-manager/api/deprecation\n\n```\n%s\n```\n' "$OUTPUT")"
+      - name: Reflect canary status
+        if: always()
+        run: |
+          code="${{ steps.canary.outputs.code }}"
+          [ "$code" = "0" ] || exit 1
+
+  discovery:
+    name: Discovery-doc drift canary
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 6 * * 1'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run discovery drift canary
+        id: canary
+        run: |
+          set +e
+          out="$(go run ./tools/canary/discovery 2>&1)"
+          code=$?
+          echo "$out"
+          {
+            echo "code=$code"
+            echo "output<<CANARY_EOF"
+            echo "$out"
+            echo "CANARY_EOF"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Open issue on drift
+        # Exit code 1 is drift; code 2 is an operational error (flaky fetch /
+        # HTTP / parse) and must NOT file a false drift report.
+        if: steps.canary.outputs.code == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "canary: discovery-doc drift in mapped fields"
+          OUTPUT: ${{ steps.canary.outputs.output }}
+        run: |
+          gh label create canary --color FBCA04 --description "Automated maintainer canary" --force
+          # Capture the listing in its own step so a gh/API failure aborts here
+          # (set -e) instead of being misread as "no existing issue" and filing a
+          # duplicate. grep runs separately, so its exit 1 (no match) is not an error.
+          titles="$(gh issue list --state open --label canary --search "\"$TITLE\" in:title" --json title --jq '.[].title')"
+          if printf '%s\n' "$titles" | grep -Fxq "$TITLE"; then
+            echo "An open canary issue titled \"$TITLE\" already exists; skipping."
+            exit 0
+          fi
+          gh issue create --title "$TITLE" --label canary --body "$(printf 'A field the provider maps changed in the live discovery doc.\n\nReconcile the provider schema, then regenerate the snapshot with\n`go run ./tools/canary/discovery -update` and review the diff.\n\n```\n%s\n```\n' "$OUTPUT")"
+      - name: Reflect canary status
+        if: always()
+        run: |
+          code="${{ steps.canary.outputs.code }}"
+          [ "$code" = "0" ] || exit 1

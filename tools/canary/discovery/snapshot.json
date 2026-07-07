@@ -1,0 +1,68 @@
+{
+  "GoogleAdsAdmanagerV1__AdUnit": {
+    "adUnitCode": "string",
+    "adUnitId": "string",
+    "adUnitSizes": "array<GoogleAdsAdmanagerV1__AdUnitSize>",
+    "appliedAdsenseEnabled": "boolean",
+    "appliedLabelFrequencyCaps": "array<GoogleAdsAdmanagerV1__LabelFrequencyCap>",
+    "appliedLabels": "array<GoogleAdsAdmanagerV1__AppliedLabel>",
+    "appliedTargetWindow": "string",
+    "appliedTeams": "array<string>",
+    "description": "string",
+    "displayName": "string",
+    "effectiveAdsenseEnabled": "boolean",
+    "effectiveAppliedLabels": "array<GoogleAdsAdmanagerV1__AppliedLabel>",
+    "effectiveLabelFrequencyCaps": "array<GoogleAdsAdmanagerV1__LabelFrequencyCap>",
+    "effectiveTargetWindow": "string",
+    "explicitlyTargeted": "boolean",
+    "externalSetTopBoxChannelId": "string",
+    "hasChildren": "boolean",
+    "name": "string",
+    "parentAdUnit": "string",
+    "parentPath": "array<GoogleAdsAdmanagerV1__AdUnitParent>",
+    "refreshDelay": "string",
+    "smartSizeMode": "string",
+    "status": "string",
+    "teams": "array<string>",
+    "updateTime": "string"
+  },
+  "GoogleAdsAdmanagerV1__CustomTargetingKey": {
+    "adTagName": "string",
+    "customTargetingKeyId": "string",
+    "displayName": "string",
+    "name": "string",
+    "reportableType": "string",
+    "status": "string",
+    "type": "string"
+  },
+  "GoogleAdsAdmanagerV1__CustomTargetingValue": {
+    "adTagName": "string",
+    "customTargetingKey": "string",
+    "displayName": "string",
+    "matchType": "string",
+    "name": "string",
+    "status": "string"
+  },
+  "GoogleAdsAdmanagerV1__Network": {
+    "currencyCode": "string",
+    "displayName": "string",
+    "effectiveRootAdUnit": "string",
+    "name": "string",
+    "networkCode": "string",
+    "networkId": "string",
+    "propertyCode": "string",
+    "secondaryCurrencyCodes": "array<string>",
+    "testNetwork": "boolean",
+    "timeZone": "string"
+  },
+  "GoogleAdsAdmanagerV1__Placement": {
+    "description": "string",
+    "displayName": "string",
+    "name": "string",
+    "placementCode": "string",
+    "placementId": "string",
+    "status": "string",
+    "targetedAdUnits": "array<string>",
+    "updateTime": "string"
+  }
+}
